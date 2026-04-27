@@ -18,11 +18,13 @@ const NODE_ENV = process.env.NODE_ENV || 'development';
 const PORT = process.env.PORT || 3000;
 const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || ['*'];
 
-// OPTIMIZED Socket.IO Configuration
+// OPTIMIZED Socket.IO Configuration with Enhanced CORS for Extensions
 const io = socketIo(server, {
   cors: {
-    origin: '*',
-    methods: ['GET', 'POST']
+    origin: ['*', 'chrome-extension://*'],
+    methods: ['GET', 'POST'],
+    credentials: false,
+    allowEIO3: true
   },
   pingInterval: 3000,
   pingTimeout: 2000,
@@ -33,11 +35,18 @@ const io = socketIo(server, {
   httpCompression: false,
   maxHttpBufferSize: 1e6,
   upgradeTimeout: 10000,
-  connectTimeout: 10000
+  connectTimeout: 10000,
+  // Add these for extension compatibility
+  path: '/socket.io/',
+  serveClient: false
 });
 
-// Middleware
-app.use(cors());
+// Middleware with enhanced CORS
+app.use(cors({
+  origin: '*',
+  methods: ['GET', 'POST'],
+  allowedHeaders: ['Content-Type', 'X-Requested-With']
+}));
 app.use(express.json());
 
 // Store active sessions
