@@ -1,0 +1,594 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Droply</title>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700;800;900&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="popup.css">
+</head>
+
+<body>
+
+  <!-- ===== SPLASH ===== -->
+  <div class="screen active" id="screen-splash">
+    <!-- Full-bleed background image from assets -->
+    <img src="assets/welcome.png" class="splash-bg-img" alt="Droply welcome">
+    <!-- Overlay button pinned to bottom -->
+    <div class="splash-overlay">
+      <button class="splash-btn" id="get-started-btn">Get Started ✨</button>
+    </div>
+  </div>
+
+  <!-- ===== SEND SCREEN ===== -->
+  <div class="screen" id="screen-send">
+    <div class="app-header">
+      <img src="assets/logo.png" class="header-logo" alt="Droply">
+      <div class="header-icons">
+        <button class="header-icon-btn settings-btn" title="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        <div class="status-dot"></div>
+      </div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active" id="tab-send">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="22" y1="2" x2="11" y2="13" />
+          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+        </svg>
+        Send
+      </button>
+      <button class="tab-btn" id="tab-receive">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        Receive
+      </button>
+    </div>
+
+    <!-- SEND TAB -->
+    <div id="send-tab-content" class="content">
+      <!-- Illustration — home.png asset as background -->
+      <div class="illus-area">
+        <img src="assets/home.png" class="illus-bg-img" alt="Droply illustration">
+      </div>
+
+      <!-- Heading — matches home.png mockup -->
+      <div class="send-heading">
+        <div class="send-title">Send a file</div>
+        <div class="send-sub">Select a file and get a code to share.</div>
+      </div>
+
+      <!-- Drop Zone — drag & drop only (popup stays open, no OS dialog) -->
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-zone-inner">
+          <!-- File upload icon matching home.png -->
+          <div class="drop-icon-box">
+            <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#6C5CE7" stroke-width="2"
+              stroke-linecap="round" stroke-linejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+              <polyline points="14 2 14 8 20 8" />
+              <line x1="12" y1="11" x2="12" y2="17" />
+              <line x1="9" y1="14" x2="15" y2="14" />
+            </svg>
+          </div>
+          <div class="drop-text">Drag & drop a file here</div>
+          <div class="drop-or">or</div>
+          <div class="drop-hint">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+            Drag directly from your file manager
+          </div>
+        </div>
+      </div>
+
+      <!-- File chip -->
+      <div class="file-chip" id="file-chip">
+        <div class="file-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+        </div>
+        <div class="file-info">
+          <div class="file-name" id="chip-name">filename.ext</div>
+          <div class="file-size" id="chip-size">0 MB</div>
+        </div>
+        <button class="file-remove" id="remove-file-btn" title="Remove">✕</button>
+      </div>
+
+      <!-- Generate button -->
+      <button class="generate-btn" id="generate-btn" disabled>
+        Generate Code
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+        </svg>
+      </button>
+
+      <div class="secure-note">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        </svg>
+        Secure • Private • Direct
+      </div>
+    </div>
+
+    <!-- RECEIVE TAB -->
+    <div id="receive-tab-content" class="content" style="display:none;">
+      <div class="receive-illus">
+        <svg style="width:80px;" viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="22" cy="58" r="14" fill="#C8874B" />
+          <circle cx="98" cy="58" r="14" fill="#C8874B" />
+          <circle cx="22" cy="58" r="9" fill="#E8A570" />
+          <circle cx="98" cy="58" r="9" fill="#E8A570" />
+          <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
+          <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
+          <circle cx="60" cy="52" r="32" fill="#C8874B" />
+          <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
+          <circle cx="50" cy="48" r="6" fill="white" />
+          <circle cx="70" cy="48" r="6" fill="white" />
+          <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
+          <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
+          <circle cx="52" cy="48" r="1.2" fill="white" />
+          <circle cx="72" cy="48" r="1.2" fill="white" />
+          <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
+          <circle cx="57.5" cy="57.5" r="1.5" fill="#8B4513" />
+          <circle cx="62.5" cy="57.5" r="1.5" fill="#8B4513" />
+          <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round" />
+          <!-- Flag -->
+          <rect x="82" y="20" width="3" height="28" fill="#5A4BD1" />
+          <path d="M85 20 L105 28 L85 36 Z" fill="#6C5CE7" />
+          <circle cx="86" cy="34" r="3" fill="#F9CA24" />
+        </svg>
+        <div class="receive-title">Receive a file</div>
+        <div class="receive-sub">Enter the code from the sender to start receiving.</div>
+      </div>
+
+      <div class="code-input-label">Enter Droply Code</div>
+      <input type="text" class="code-input" id="receive-code-input" placeholder="EXAMPLE" maxlength="8">
+
+      <button class="connect-btn" id="connect-btn" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="22" y1="2" x2="11" y2="13" />
+          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+        </svg>
+        Connect
+      </button>
+
+      <div class="hint-box">
+        <span class="hint-icon">💡</span>
+        <span class="hint-text">Ask the sender for their 6-8 character Droply code</span>
+      </div>
+
+      <div class="secure-note">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        </svg>
+        Secure • Private • Direct
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== CODE SCREEN ===== -->
+  <div class="screen" id="screen-code">
+    <div class="app-header">
+      <img src="assets/logo.png" class="header-logo" alt="Droply">
+      <div class="header-icons">
+        <button class="header-icon-btn settings-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        <div class="status-dot"></div>
+      </div>
+    </div>
+
+    <div class="tab-bar">
+      <button class="tab-btn active">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <line x1="22" y1="2" x2="11" y2="13" />
+          <polygon points="22 2 15 22 11 13 2 9 22 2" />
+        </svg>
+        Send
+      </button>
+      <button class="tab-btn" id="tab-receive-code">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+          <polyline points="7 10 12 15 17 10" />
+          <line x1="12" y1="15" x2="12" y2="3" />
+        </svg>
+        Receive
+      </button>
+    </div>
+
+    <div class="content">
+      <!-- Scene -->
+      <div class="illus-area">
+        <svg style="position:absolute;bottom:0;left:0;width:100%;height:100%;" viewBox="0 0 320 110"
+          preserveAspectRatio="none">
+          <ellipse cx="80" cy="115" rx="90" ry="55" fill="#C4B5FD" opacity="0.5" />
+          <ellipse cx="260" cy="115" rx="80" ry="50" fill="#A78BFA" opacity="0.4" />
+          <rect x="30" y="60" width="8" height="35" fill="#8B5E3C" />
+          <circle cx="34" cy="52" r="20" fill="#34D399" />
+          <rect x="265" y="55" width="8" height="40" fill="#8B5E3C" />
+          <circle cx="269" cy="46" r="22" fill="#34D399" />
+          <!-- Dashed arc -->
+          <path d="M55 65 Q160 15 255 65" stroke="#6C5CE7" stroke-width="2" stroke-dasharray="6 4" fill="none"
+            opacity="0.6" />
+          <!-- Arrows -->
+          <path d="M90 52 L100 48 L94 55" stroke="#6C5CE7" stroke-width="1.5" fill="none" stroke-linecap="round" />
+          <path d="M220 52 L230 48 L224 55" stroke="#6C5CE7" stroke-width="1.5" fill="none" stroke-linecap="round" />
+        </svg>
+        <svg style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:60px;z-index:2;"
+          viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+          <circle cx="22" cy="58" r="14" fill="#C8874B" />
+          <circle cx="98" cy="58" r="14" fill="#C8874B" />
+          <circle cx="22" cy="58" r="9" fill="#E8A570" />
+          <circle cx="98" cy="58" r="9" fill="#E8A570" />
+          <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
+          <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
+          <circle cx="60" cy="52" r="32" fill="#C8874B" />
+          <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
+          <circle cx="50" cy="48" r="6" fill="white" />
+          <circle cx="70" cy="48" r="6" fill="white" />
+          <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
+          <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
+          <circle cx="52" cy="48" r="1.2" fill="white" />
+          <circle cx="72" cy="48" r="1.2" fill="white" />
+          <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
+          <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round" />
+        </svg>
+      </div>
+
+      <!-- Code box -->
+      <div class="code-box">
+        <div class="code-label">Your Droply Code</div>
+        <div class="droply-code" id="display-code">7K3 • PL9</div>
+        <div class="code-timer">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10" />
+            <polyline points="12 6 12 12 16 14" />
+          </svg>
+          Expires in <span id="timer-display">04:59</span>
+        </div>
+        <div class="code-actions">
+          <button class="code-action-btn" id="copy-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2" />
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" />
+            </svg>
+            Copy Code
+          </button>
+          <button class="code-action-btn" id="share-btn">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="22" y1="2" x2="11" y2="13" />
+              <polygon points="22 2 15 22 11 13 2 9 22 2" />
+            </svg>
+            Share Code
+          </button>
+        </div>
+      </div>
+
+      <!-- File chip with check -->
+      <div class="file-chip visible" id="code-file-chip">
+        <div class="file-icon">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+            <polyline points="14 2 14 8 20 8" />
+          </svg>
+        </div>
+        <div class="file-info">
+          <div class="file-name" id="code-chip-name">file.ext</div>
+          <div class="file-size" id="code-chip-size">0 MB</div>
+        </div>
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#00B894" stroke-width="2.5">
+          <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14" />
+          <polyline points="22 4 12 14.01 9 11.01" />
+        </svg>
+      </div>
+
+      <div class="secure-note">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+        </svg>
+        Secure • Private • Direct
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== CONNECTING SCREEN ===== -->
+  <div class="screen" id="screen-connecting"
+    style="flex-direction:column; align-items:center; justify-content:flex-start; padding-top:40px; gap:0;">
+    <!-- Illustration -->
+    <div
+      style="width:100%; height:180px; background:linear-gradient(180deg,#EDE9FF 0%,#D0CAFF 100%); border-radius:16px; display:flex; align-items:flex-end; justify-content:center; overflow:hidden; position:relative; margin-bottom:24px;">
+      <svg style="position:absolute;bottom:0;left:0;width:100%;height:100%;" viewBox="0 0 320 180"
+        preserveAspectRatio="none">
+        <ellipse cx="80" cy="190" rx="100" ry="70" fill="#C4B5FD" opacity="0.5" />
+        <ellipse cx="260" cy="190" rx="90" ry="65" fill="#A78BFA" opacity="0.4" />
+        <rect x="20" y="100" width="8" height="55" fill="#8B5E3C" />
+        <circle cx="24" cy="88" r="24" fill="#34D399" />
+        <circle cx="14" cy="96" r="16" fill="#2ECC71" />
+        <rect x="272" y="90" width="8" height="60" fill="#8B5E3C" />
+        <circle cx="276" cy="76" r="26" fill="#34D399" />
+        <circle cx="288" cy="86" r="18" fill="#2ECC71" />
+        <!-- Monkey on left tree -->
+        <circle cx="18" cy="92" r="10" fill="#C8874B" />
+        <circle cx="18" cy="95" r="7" fill="#C8874B" />
+        <ellipse cx="18" cy="97" rx="5" ry="4" fill="#E8A570" />
+        <!-- Arrow curve -->
+        <path d="M50 120 Q160 60 270 120" stroke="#6C5CE7" stroke-width="2" stroke-dasharray="8 5" fill="none"
+          opacity="0.5" />
+      </svg>
+      <svg style="position:absolute;bottom:12px;left:50%;transform:translateX(-50%);width:60px;z-index:2;"
+        viewBox="0 0 120 120">
+        <circle cx="22" cy="58" r="14" fill="#C8874B" />
+        <circle cx="98" cy="58" r="14" fill="#C8874B" />
+        <circle cx="22" cy="58" r="9" fill="#E8A570" />
+        <circle cx="98" cy="58" r="9" fill="#E8A570" />
+        <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
+        <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
+        <circle cx="60" cy="52" r="32" fill="#C8874B" />
+        <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
+        <circle cx="50" cy="48" r="6" fill="white" />
+        <circle cx="70" cy="48" r="6" fill="white" />
+        <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
+        <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
+        <circle cx="52" cy="48" r="1.2" fill="white" />
+        <circle cx="72" cy="48" r="1.2" fill="white" />
+        <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
+        <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round" />
+      </svg>
+    </div>
+
+    <div style="font-size:22px;font-weight:900;color:#2D2D2D;margin-bottom:8px;">Connecting...</div>
+    <div style="font-size:13px;font-weight:600;color:#888;text-align:center;margin-bottom:32px;">Please wait while
+      we<br>find each other</div>
+    <div class="spinner"></div>
+    <div style="font-size:11px;font-weight:600;color:#AAA;display:flex;align-items:center;gap:5px;margin-top:12px;">
+      <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+      </svg>
+      Establishing secure connection...
+    </div>
+  </div>
+
+  <!-- ===== TRANSFER SCREEN ===== -->
+  <div class="screen" id="screen-transfer" style="flex-direction:column;">
+    <div class="app-header">
+      <img src="assets/logo.png" class="header-logo" alt="Droply">
+      <div class="header-icons">
+        <button class="header-icon-btn settings-btn">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="3" />
+            <path
+              d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+          </svg>
+        </button>
+        <div class="status-dot"></div>
+      </div>
+    </div>
+
+    <div class="content" style="gap:16px;">
+      <!-- Transfer illustration with jumping monkey -->
+      <div
+        style="width:100%;height:150px;background:linear-gradient(180deg,#EDE9FF 0%,#D0CAFF 100%);border-radius:16px;position:relative;overflow:hidden;">
+        <svg style="position:absolute;bottom:0;left:0;width:100%;height:100%;" viewBox="0 0 320 150"
+          preserveAspectRatio="none">
+          <ellipse cx="80" cy="160" rx="90" ry="60" fill="#C4B5FD" opacity="0.5" />
+          <ellipse cx="260" cy="160" rx="80" ry="55" fill="#A78BFA" opacity="0.4" />
+          <rect x="20" y="90" width="8" height="50" fill="#8B5E3C" />
+          <circle cx="24" cy="78" r="22" fill="#34D399" />
+          <rect x="272" y="80" width="8" height="55" fill="#8B5E3C" />
+          <circle cx="276" cy="68" r="24" fill="#34D399" />
+          <path d="M50 100 Q160 40 270 100" stroke="#6C5CE7" stroke-width="2.5" stroke-dasharray="8 5" fill="none"
+            opacity="0.6" />
+          <!-- Leaf particles -->
+          <ellipse cx="100" cy="80" rx="5" ry="3" fill="#34D399" opacity="0.7" transform="rotate(-30 100 80)" />
+          <ellipse cx="180" cy="55" rx="4" ry="2.5" fill="#34D399" opacity="0.6" transform="rotate(20 180 55)" />
+          <ellipse cx="230" cy="72" rx="4" ry="2.5" fill="#34D399" opacity="0.7" transform="rotate(-15 230 72)" />
+        </svg>
+        <!-- Jumping monkey -->
+        <div id="transfer-monkey"
+          style="position:absolute;bottom:12px;left:25%;transition:left 0.5s ease, bottom 0.3s ease;">
+          <svg style="width:50px;" viewBox="0 0 120 120">
+            <circle cx="22" cy="58" r="14" fill="#C8874B" />
+            <circle cx="98" cy="58" r="14" fill="#C8874B" />
+            <circle cx="22" cy="58" r="9" fill="#E8A570" />
+            <circle cx="98" cy="58" r="9" fill="#E8A570" />
+            <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
+            <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
+            <circle cx="60" cy="52" r="32" fill="#C8874B" />
+            <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
+            <circle cx="50" cy="48" r="6" fill="white" />
+            <circle cx="70" cy="48" r="6" fill="white" />
+            <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
+            <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
+            <circle cx="52" cy="48" r="1.2" fill="white" />
+            <circle cx="72" cy="48" r="1.2" fill="white" />
+            <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
+            <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round" />
+          </svg>
+        </div>
+      </div>
+
+      <div style="text-align:center;">
+        <div style="font-size:20px;font-weight:900;color:#2D2D2D;margin-bottom:4px;">Transferring...</div>
+        <div class="transfer-file" id="transfer-filename">filename.ext</div>
+      </div>
+
+      <div class="transfer-percent" id="transfer-percent">0%</div>
+
+      <div class="progress-bar-wrap">
+        <div class="progress-bar-fill" id="progress-fill" style="width:0%"></div>
+      </div>
+
+      <div class="transfer-stats">
+        <span id="transfer-bytes">0 MB of 0 MB</span>
+        <div class="transfer-speed">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+          </svg>
+          <span id="transfer-speed">-- MB/s</span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
+          </svg>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== COMPLETE SCREEN ===== -->
+  <div class="screen" id="screen-complete"
+    style="flex-direction:column;align-items:center;justify-content:center;padding:24px 20px;gap:12px;">
+    <!-- Monkey with confetti -->
+    <div style="position:relative;width:140px;height:140px;display:flex;align-items:center;justify-content:center;"
+      id="complete-illus">
+      <svg style="width:110px;" viewBox="0 0 120 120">
+        <circle cx="22" cy="58" r="14" fill="#C8874B" />
+        <circle cx="98" cy="58" r="14" fill="#C8874B" />
+        <circle cx="22" cy="58" r="9" fill="#E8A570" />
+        <circle cx="98" cy="58" r="9" fill="#E8A570" />
+        <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
+        <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
+        <circle cx="60" cy="52" r="32" fill="#C8874B" />
+        <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
+        <circle cx="50" cy="48" r="6" fill="white" />
+        <circle cx="70" cy="48" r="6" fill="white" />
+        <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
+        <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
+        <circle cx="52" cy="48" r="1.2" fill="white" />
+        <circle cx="72" cy="48" r="1.2" fill="white" />
+        <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
+        <!-- Big smile -->
+        <path d="M48 63 Q60 74 72 63" stroke="#8B4513" stroke-width="2" fill="none" stroke-linecap="round" />
+        <!-- Raised arms -->
+        <ellipse cx="28" cy="72" rx="12" ry="7" fill="#C8874B" transform="rotate(-50 28 72)" />
+        <ellipse cx="92" cy="72" rx="12" ry="7" fill="#C8874B" transform="rotate(50 92 72)" />
+      </svg>
+      <!-- Confetti dots -->
+      <div id="confetti-container"></div>
+    </div>
+
+    <div style="font-size:24px;font-weight:900;color:#2D2D2D;">Transfer Complete! 🎉</div>
+    <div class="complete-file" id="complete-filename">filename.ext</div>
+    <div class="complete-size" id="complete-size">0 MB</div>
+
+    <div class="complete-actions" style="width:100%;">
+      <button class="open-file-btn" id="open-file-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+        </svg>
+        Open File
+      </button>
+      <button class="done-btn" id="done-btn">Done</button>
+    </div>
+  </div>
+
+  <!-- ===== SETTINGS SCREEN ===== -->
+  <div class="screen" id="screen-settings">
+    <div class="settings-header">
+      <button class="back-btn" id="back-btn">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <polyline points="15 18 9 12 15 6" />
+        </svg>
+      </button>
+      <span class="settings-title">Settings</span>
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#AAA" stroke-width="2">
+        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+        <polyline points="7 10 12 15 17 10" />
+        <line x1="12" y1="15" x2="12" y2="3" />
+      </svg>
+    </div>
+
+    <div class="settings-list">
+      <div class="settings-item" id="theme-toggle-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="5" />
+              <line x1="12" y1="1" x2="12" y2="3" />
+              <line x1="12" y1="21" x2="12" y2="23" />
+              <line x1="4.22" y1="4.22" x2="5.64" y2="5.64" />
+              <line x1="18.36" y1="18.36" x2="19.78" y2="19.78" />
+              <line x1="1" y1="12" x2="3" y2="12" />
+              <line x1="21" y1="12" x2="23" y2="12" />
+              <line x1="4.22" y1="19.78" x2="5.64" y2="18.36" />
+              <line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+            </svg>
+          </div>
+          <div class="settings-item-label">Theme</div>
+        </div>
+        <div class="settings-item-value">
+          Light
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </div>
+      </div>
+
+      <div class="settings-item" id="clear-history-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="3 6 5 6 21 6" />
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+            </svg>
+          </div>
+          <div class="settings-item-label">Clear transfer history</div>
+        </div>
+        <div class="settings-item-value">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </div>
+      </div>
+
+      <div class="settings-item">
+        <div class="settings-item-left">
+          <div class="settings-item-icon">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10" />
+              <line x1="12" y1="8" x2="12" y2="12" />
+              <line x1="12" y1="16" x2="12.01" y2="16" />
+            </svg>
+          </div>
+          <div class="settings-item-label">About Droply</div>
+        </div>
+        <div class="settings-item-value">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        </div>
+      </div>
+    </div>
+
+    <div class="settings-footer">
+      Droply v1.0.0 <span class="heart">♥</span>
+    </div>
+  </div>
+
+  <!-- Toast Container -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="socket.io.min.js"></script>
+  <script src="popup.js"></script>
+</body>
+
+</html>
