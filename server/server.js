@@ -1,613 +1,555 @@
-// filepath: /home/dhruv/droply/server/server.js
-// Updated: May 13, 2026 - Fixed Procfile deployment
-
 require('dotenv').config();
 
-const express = require('express');
-const http = require('http');
-const socketIo = require('socket.io');
-const cors = require('cors');
-const path = require('path');
+const express  = require('express');
+const http     = require('http');
+const { Server } = require('socket.io');
 
-const app = express();
+const app    = express();
 const server = http.createServer(app);
+const PORT   = process.env.PORT || 3000;
 
-// Environment variables
-const NODE_ENV = process.env.NODE_ENV || 'development';
-const PORT = process.env.PORT || 3000;
-const ALLOWED_ORIGINS = process.env.ALLOWED_ORIGINS?.split(',') || ['*'];
-
-// OPTIMIZED Socket.IO Configuration with Enhanced CORS for Extensions
-const io = socketIo(server, {
-  cors: {
-    origin: ['*', 'chrome-extension://*'],
-    methods: ['GET', 'POST'],
-    credentials: false,
-    allowEIO3: true
-  },
-  pingInterval: 3000,
-  pingTimeout: 2000,
-  transports: ['websocket', 'polling'],
-  allowUpgrades: true,
-  serveClient: false,
-  perMessageDeflate: false,
-  httpCompression: false,
-  maxHttpBufferSize: 1e6,
-  upgradeTimeout: 10000,
-  connectTimeout: 10000,
-  // Add these for extension compatibility
-  path: '/socket.io/',
-  serveClient: false
+// ── Socket.IO ────────────────────────────────────────────────────────────────
+const io = new Server(server, {
+  cors:                 { origin: '*', methods: ['GET', 'POST'] },
+  transports:           ['websocket', 'polling'],
+  pingInterval:         10000,   // send ping every 10 s
+  pingTimeout:          20000,   // wait 20 s for pong before disconnect
+  maxHttpBufferSize:    1e6,
+  serveClient:          false,
+  perMessageDeflate:    false,
 });
 
-// Middleware with enhanced CORS
-app.use(cors({
-  origin: '*',
-  methods: ['GET', 'POST'],
-  allowedHeaders: ['Content-Type', 'X-Requested-With']
-}));
 app.use(express.json());
+app.use(require('cors')());
 
-// Store active sessions
+// ── Session store ─────────────────────────────────────────────────────────────
+// sessions: code → { senderId, receivers: Map<peerId, socketId>, timer }
 const sessions = new Map();
-const sessionExpiryMap = new Map();
 
-// Root endpoint
-app.get('/', (req, res) => {
-  res.json({
-    name: 'Droply Signaling Server',
-    version: '1.0.0',
-    status: 'running',
-    endpoints: {
-      health: '/health',
-      receive: '/receive?code=ABC123',
-      socket: '/socket.io/'
-    },
-    timestamp: new Date().toISOString()
+// ── Logging ───────────────────────────────────────────────────────────────────
+const ts  = () => new Date().toISOString();
+const log = {
+  info:    msg => console.log(`ℹ️  [${ts()}] ${msg}`),
+  success: msg => console.log(`✅ [${ts()}] ${msg}`),
+  error:   msg => console.error(`❌ [${ts()}] ${msg}`),
+  warn:    msg => console.warn(`⚠️  [${ts()}] ${msg}`),
+};
+
+// ── HTTP endpoints ────────────────────────────────────────────────────────────
+app.get('/', (_req, res) => res.json({ name: 'Droply Signaling Server', status: 'running' }));
+
+app.get('/health', (_req, res) => res.json({
+  status:            'ok',
+  activeSessions:    sessions.size,
+  connections:       io.engine.clientsCount,
+  uptime:            Math.floor(process.uptime()),
+}));
+
+// Mobile receiver landing page
+app.get('/receive', (req, res) => {
+  const code = req.query.code;
+  if (!code) return res.status(400).send('<h1>Missing code parameter</h1>');
+  res.send(receiverPage(code));
+});
+
+// ── Socket events ─────────────────────────────────────────────────────────────
+io.on('connection', socket => {
+  log.success(`Connected: ${socket.id.slice(0, 10)}`);
+
+  // ── Sender registers a code ──────────────────────────────────────────────
+  socket.on('sender-ready', ({ code }) => {
+    if (!code || code.length !== 6) {
+      return socket.emit('error', { message: 'Invalid code format' });
+    }
+
+    // Clean up any previous session with same code
+    if (sessions.has(code)) clearSession(code);
+
+    const timer = setTimeout(() => {
+      log.warn(`Session expired: ${code}`);
+      io.to(sessions.get(code)?.senderId).emit('code-expired');
+      clearSession(code);
+    }, 180_000);
+
+    sessions.set(code, { senderId: socket.id, receivers: new Map(), timer });
+    log.info(`Session created: ${code} by ${socket.id.slice(0, 10)}`);
+    socket.emit('sender-ready-ack', { code });
+  });
+
+  // ── Receiver joins ───────────────────────────────────────────────────────
+  socket.on('receiver-ready', ({ code }) => {
+    const session = sessions.get(code);
+    if (!session) return socket.emit('error', { message: 'Invalid or expired code' });
+
+    const peerId = 'p-' + Math.random().toString(36).slice(2, 10);
+    session.receivers.set(peerId, socket.id);
+
+    log.info(`Receiver joined: ${peerId} on code ${code}`);
+    socket.emit('receiver-ready-ack', { peerId });
+    io.to(session.senderId).emit('receiver-joined', { peerId });
+  });
+
+  // ── WebRTC signaling relay ───────────────────────────────────────────────
+  socket.on('offer', ({ code, offer, peerId }) => {
+    const session = sessions.get(code);
+    if (!session) return;
+    const receiverSocketId = session.receivers.get(peerId);
+    if (!receiverSocketId) return log.warn(`offer: unknown peerId ${peerId}`);
+    io.to(receiverSocketId).emit('offer', { offer, peerId });
+  });
+
+  socket.on('answer', ({ code, answer, peerId }) => {
+    const session = sessions.get(code);
+    if (!session) return;
+    io.to(session.senderId).emit('answer', { answer, peerId });
+  });
+
+  socket.on('ice-candidate', ({ code, candidate, peerId }) => {
+    const session = sessions.get(code);
+    if (!session || !candidate) return;
+
+    if (session.senderId === socket.id) {
+      // Sender → specific receiver
+      const recvId = session.receivers.get(peerId);
+      if (recvId) io.to(recvId).emit('ice-candidate', { candidate, peerId });
+    } else {
+      // Receiver → sender
+      io.to(session.senderId).emit('ice-candidate', { candidate, peerId });
+    }
+  });
+
+  socket.on('peer-complete', ({ code, peerId }) => {
+    const session = sessions.get(code);
+    if (!session) return;
+    io.to(session.senderId).emit('peer-complete', { peerId });
+  });
+
+  socket.on('code-expired', ({ code }) => clearSession(code));
+
+  // ── Disconnect cleanup ───────────────────────────────────────────────────
+  socket.on('disconnect', () => {
+    log.warn(`Disconnected: ${socket.id.slice(0, 10)}`);
+
+    for (const [code, session] of sessions) {
+      if (session.senderId === socket.id) {
+        // Sender left — notify all receivers
+        session.receivers.forEach((receiverSocketId, peerId) => {
+          io.to(receiverSocketId).emit('peer-disconnected', { peerId });
+        });
+        clearSession(code);
+        break;
+      }
+
+      // Check if a receiver left
+      for (const [peerId, receiverSocketId] of session.receivers) {
+        if (receiverSocketId === socket.id) {
+          session.receivers.delete(peerId);
+          io.to(session.senderId).emit('peer-disconnected', { peerId });
+          log.info(`Receiver ${peerId} left session ${code}`);
+          break;
+        }
+      }
+    }
   });
 });
 
-// ENHANCED LOGGING UTILITY
-const log = {
-  info: (msg) => console.log(`ℹ️  [${new Date().toISOString()}] ${msg}`),
-  success: (msg) => console.log(`✅ [${new Date().toISOString()}] ${msg}`),
-  error: (msg) => console.error(`❌ [${new Date().toISOString()}] ${msg}`),
-  warn: (msg) => console.warn(`⚠️  [${new Date().toISOString()}] ${msg}`),
-  debug: (msg) => console.log(`🔍 [${new Date().toISOString()}] ${msg}`),
-  event: (event, socketId, data) => console.log(`📡 [${new Date().toISOString()}] EVENT: ${event} | Socket: ${socketId.substring(0, 8)}... | Data: ${JSON.stringify(data)}`)
-};
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function clearSession(code) {
+  const session = sessions.get(code);
+  if (session) { clearTimeout(session.timer); sessions.delete(code); }
+  log.info(`Session cleared: ${code} | active: ${sessions.size}`);
+}
 
-// Health check endpoint
-app.get('/health', (req, res) => {
-  const health = {
-    status: 'ok',
-    timestamp: new Date().toISOString(),
-    activeSessions: sessions.size,
-    activeConnections: io.engine.clientsCount,
-    uptime: process.uptime()
-  };
-  log.debug(`Health check request: ${JSON.stringify(health)}`);
-  res.json(health);
-});
+// ── Mobile receiver page — full WebRTC client, no extension needed ────────────
+function receiverPage(code) {
+  // SERVER_URL is injected at render time so the client script knows where to connect.
+  const serverUrl = process.env.PUBLIC_URL || `http://localhost:${PORT}`;
 
-// Web receiver page - for mobile QR code scanning
-app.get('/receive', (req, res) => {
-  const code = req.query.code;
-  
-  if (!code) {
-    return res.status(400).send('<h1>Invalid request - missing code parameter</h1>');
-  }
-
-  log.info(`📱 Mobile receiver page requested with code: ${code}`);
-
-  // Send HTML page with code embedded
-  const html = `
-<!DOCTYPE html>
+  return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Droply - Receive File</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+  <title>Droply – Receive file</title>
   <style>
-    * {
-      margin: 0;
-      padding: 0;
-      box-sizing: border-box;
-    }
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
 
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      min-height: 100vh;
+      min-height: 100dvh;
       display: flex;
-      justify-content: center;
+      flex-direction: column;
       align-items: center;
-      padding: 20px;
+      justify-content: center;
+      padding: 24px 16px;
+      background: linear-gradient(145deg, #6C5CE7 0%, #a29bfe 100%);
     }
 
-    .container {
-      background: white;
-      border-radius: 16px;
-      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-      padding: 40px;
-      max-width: 500px;
+    .card {
+      background: #fff;
+      border-radius: 20px;
+      padding: 32px 24px;
       width: 100%;
+      max-width: 400px;
       text-align: center;
+      box-shadow: 0 24px 64px rgba(0,0,0,.22);
     }
 
-    .header {
-      margin-bottom: 30px;
-    }
+    .logo { font-size: 40px; margin-bottom: 4px; }
 
-    .header h1 {
-      font-size: 36px;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      background: linear-gradient(135deg, #6C5CE7, #a29bfe);
       -webkit-background-clip: text;
       -webkit-text-fill-color: transparent;
       background-clip: text;
-      margin-bottom: 10px;
+      margin-bottom: 6px;
     }
 
-    .subtitle {
-      color: #666;
-      font-size: 14px;
-    }
+    /* ── States ── */
+    .state { display: none; }
+    .state.active { display: block; }
 
-    .content {
-      margin: 30px 0;
+    /* connecting */
+    .spinner {
+      width: 48px; height: 48px;
+      border: 4px solid #e0e0fe;
+      border-top-color: #6C5CE7;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin: 24px auto 16px;
     }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    .code-display {
-      background: #f5f7fa;
-      padding: 20px;
-      border-radius: 12px;
-      margin: 20px 0;
-      border-left: 4px solid #667eea;
+    .status-text { color: #555; font-size: 15px; margin-top: 8px; }
+
+    /* progress */
+    .file-icon { font-size: 48px; margin: 16px 0 8px; }
+    .file-name { font-size: 17px; font-weight: 600; color: #222; word-break: break-all; margin-bottom: 4px; }
+    .file-size { font-size: 13px; color: #888; margin-bottom: 20px; }
+
+    .progress-wrap {
+      background: #f0effe;
+      border-radius: 999px;
+      height: 10px;
+      overflow: hidden;
+      margin: 12px 0 6px;
     }
-
-    .code-label {
-      color: #999;
+    .progress-bar {
+      height: 100%;
+      background: linear-gradient(90deg, #6C5CE7, #a29bfe);
+      border-radius: 999px;
+      width: 0%;
+      transition: width 0.2s ease;
+    }
+    .progress-label {
+      display: flex;
+      justify-content: space-between;
       font-size: 12px;
-      margin-bottom: 8px;
-      text-transform: uppercase;
-      font-weight: 600;
+      color: #888;
+      margin-bottom: 4px;
     }
+    .speed { font-size: 12px; color: #aaa; margin-top: 4px; }
 
-    .code-text {
-      font-size: 32px;
-      font-weight: 700;
-      color: #333;
-      font-family: 'Courier New', monospace;
-      letter-spacing: 4px;
-    }
+    /* complete */
+    .complete-icon { font-size: 64px; margin: 12px 0; }
+    .complete-name { font-size: 16px; font-weight: 600; color: #333; word-break: break-all; margin-bottom: 4px; }
+    .complete-size { font-size: 13px; color: #888; margin-bottom: 24px; }
 
-    .btn-primary {
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-      color: white;
+    /* error */
+    .error-icon { font-size: 48px; margin: 16px 0 8px; }
+    .error-msg { font-size: 14px; color: #e17055; margin-bottom: 20px; }
+
+    /* button */
+    .btn {
+      display: block;
+      width: 100%;
+      padding: 15px;
+      border-radius: 12px;
       border: none;
-      padding: 14px 32px;
-      border-radius: 8px;
+      cursor: pointer;
       font-size: 16px;
       font-weight: 600;
-      cursor: pointer;
-      transition: transform 0.2s, box-shadow 0.2s;
-      margin: 10px 0;
-      width: 100%;
+      margin-top: 12px;
+      transition: opacity .15s, transform .1s;
     }
+    .btn:active { transform: scale(0.98); opacity: .85; }
+    .btn-primary { background: linear-gradient(135deg, #6C5CE7, #a29bfe); color: #fff; }
+    .btn-outline { background: transparent; border: 2px solid #6C5CE7; color: #6C5CE7; }
 
-    .btn-primary:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
-    }
-
-    .btn-primary:active {
-      transform: translateY(0);
-    }
-
-    .btn-secondary {
-      background: white;
-      color: #667eea;
-      border: 2px solid #667eea;
-      padding: 12px 24px;
-      border-radius: 8px;
-      font-size: 14px;
-      font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
-      margin: 10px 0;
-    }
-
-    .btn-secondary:hover {
-      background: #f5f7fa;
-    }
-
-    .status {
-      padding: 20px;
-      border-radius: 8px;
-      margin: 20px 0;
-      font-size: 14px;
-      display: none;
-    }
-
-    .status.info {
-      background: #e3f2fd;
-      color: #1976d2;
-      display: block;
-    }
-
-    .status.success {
-      background: #e8f5e9;
-      color: #2e7d32;
-      display: block;
-    }
-
-    .icon {
-      font-size: 48px;
-      margin-bottom: 20px;
-    }
-
-    .info-text {
-      color: #999;
-      font-size: 12px;
-      margin-top: 15px;
-      line-height: 1.6;
-    }
-
-    .steps {
-      background: #f5f7fa;
-      padding: 20px;
-      border-radius: 8px;
-      margin: 20px 0;
-      text-align: left;
-      font-size: 13px;
-    }
-
-    .steps ol {
-      margin-left: 20px;
-      margin-top: 10px;
-    }
-
-    .steps li {
-      margin: 8px 0;
-      color: #666;
-    }
+    .footer-note { font-size: 11px; color: rgba(255,255,255,.7); margin-top: 20px; }
   </style>
 </head>
 <body>
-  <div class="container">
-    <div class="header">
-      <div class="icon">📁</div>
-      <h1>Droply</h1>
-      <p class="subtitle">Instant File Sharing</p>
-    </div>
 
-    <div class="content">
-      <div class="status success" id="successStatus">
-        ✅ Share code ready!
-      </div>
+<div class="card">
+  <div class="logo">🐒</div>
+  <h1>Droply</h1>
 
-      <p style="color: #666; margin: 20px 0;">A file has been shared with you using Droply.</p>
-      
-      <div class="code-display">
-        <div class="code-label">Your Share Code</div>
-        <div class="code-text" id="shareCode">${code}</div>
-      </div>
-
-      <button class="btn-primary" onclick="copyCode()">
-        📋 Copy Code
-      </button>
-
-      <div class="steps">
-        <strong>📱 To receive the file:</strong>
-        <ol>
-          <li>Install Droply extension on your device</li>
-          <li>Open the Droply extension</li>
-          <li>Go to the "Receive" tab</li>
-          <li>Paste this code: <strong>${code}</strong></li>
-          <li>Click "Connect" and wait for the transfer</li>
-        </ol>
-      </div>
-
-      <button class="btn-secondary" onclick="installGuide()">
-        🔗 Install Droply Extension
-      </button>
-    </div>
-
-    <div class="info-text">
-      💡 Keep this page open during the transfer
-    </div>
+  <!-- STATE: connecting -->
+  <div class="state active" id="s-connecting">
+    <div class="spinner"></div>
+    <p class="status-text" id="connect-status">Connecting to sender…</p>
   </div>
 
-  <script>
-    function copyCode() {
-      const code = document.getElementById('shareCode').textContent;
-      navigator.clipboard.writeText(code).then(() => {
-        const btn = event.target;
-        const originalText = btn.textContent;
-        btn.textContent = '✓ Copied!';
-        setTimeout(() => {
-          btn.textContent = originalText;
-        }, 2000);
-      });
-    }
+  <!-- STATE: receiving -->
+  <div class="state" id="s-receiving">
+    <div class="file-icon">📄</div>
+    <div class="file-name" id="recv-name">—</div>
+    <div class="file-size" id="recv-size">—</div>
+    <div class="progress-wrap">
+      <div class="progress-bar" id="recv-bar"></div>
+    </div>
+    <div class="progress-label">
+      <span id="recv-bytes">0 B</span>
+      <span id="recv-pct">0%</span>
+    </div>
+    <div class="speed" id="recv-speed"></div>
+  </div>
 
-    function installGuide() {
-      window.open('https://chrome.google.com/webstore/detail/droply/YOUR_EXTENSION_ID', '_blank');
-    }
-  </script>
-</body>
-</html>
-  `;
+  <!-- STATE: complete -->
+  <div class="state" id="s-complete">
+    <div class="complete-icon">✅</div>
+    <div class="complete-name" id="done-name"></div>
+    <div class="complete-size" id="done-size"></div>
+    <button class="btn btn-primary" id="download-btn">⬇️ Save file</button>
+    <button class="btn btn-outline" id="share-btn" style="display:none">↗️ Share file</button>
+  </div>
 
-  res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  res.send(html);
+  <!-- STATE: error -->
+  <div class="state" id="s-error">
+    <div class="error-icon">⚠️</div>
+    <p class="error-msg" id="error-msg">Something went wrong.</p>
+    <button class="btn btn-outline" onclick="location.reload()">Try again</button>
+  </div>
+</div>
+
+<p class="footer-note">Keep this page open during the transfer</p>
+
+<!-- Socket.IO client from CDN -->
+<script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
+<script>
+// ── Config (injected by server) ───────────────────────────────────────────────
+const SERVER_URL = '${serverUrl}';
+const CODE       = '${code}';
+
+const RTC_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls:       'turn:openrelay.metered.ca:443',
+      username:   'openrelayproject',
+      credential: 'openrelayproject',
+    },
+  ],
+};
+
+// ── State ─────────────────────────────────────────────────────────────────────
+let pc        = null;
+let myPeerId  = null;
+let chunks    = [];
+let meta      = null;
+let blobUrl   = null;
+let lastBytes = 0, lastTime = Date.now();
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function show(id) {
+  document.querySelectorAll('.state').forEach(el => el.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+function setStatus(msg) {
+  document.getElementById('connect-status').textContent = msg;
+}
+
+function showError(msg) {
+  document.getElementById('error-msg').textContent = msg;
+  show('s-error');
+}
+
+function formatBytes(b) {
+  if (b < 1024)       return b + ' B';
+  if (b < 1048576)    return (b / 1024).toFixed(1) + ' KB';
+  return (b / 1048576).toFixed(1) + ' MB';
+}
+
+function updateProgress(received, total) {
+  const pct = total ? Math.min(Math.floor(received / total * 100), 100) : 0;
+  document.getElementById('recv-bar').style.width  = pct + '%';
+  document.getElementById('recv-pct').textContent  = pct + '%';
+  document.getElementById('recv-bytes').textContent = formatBytes(received) + ' / ' + formatBytes(total);
+
+  const now   = Date.now();
+  const dt    = (now - lastTime) / 1000;
+  if (dt > 0.5) {
+    const speed = (received - lastBytes) / dt;
+    document.getElementById('recv-speed').textContent = formatBytes(speed) + '/s';
+    lastBytes = received;
+    lastTime  = now;
+  }
+}
+
+// ── Socket.IO ─────────────────────────────────────────────────────────────────
+setStatus('Connecting to server…');
+const socket = io(SERVER_URL, {
+  transports:           ['websocket'],
+  reconnection:         false,   // if connection drops mid-transfer, don't silently reconnect
 });
 
-// Socket.IO Events
-io.on('connection', (socket) => {
-  log.success(`🟢 CLIENT CONNECTED: ${socket.id.substring(0, 12)}...`);
-  log.info(`📊 Active connections: ${io.engine.clientsCount} | Active sessions: ${sessions.size}`);
+socket.on('connect', () => {
+  setStatus('Joined — waiting for sender…');
+  socket.emit('receiver-ready', { code: CODE });
+});
 
-  socket.on('sender-ready', (data) => {
-    const { code } = data;
-    log.event('sender-ready', socket.id, { code });
+socket.on('connect_error', () => showError('Could not reach the Droply server. Check your connection.'));
 
-    if (!code || code.length !== 6) {
-      log.error(`Invalid code format from ${socket.id.substring(0, 8)}...: "${code}"`);
-      socket.emit('error', { message: 'Invalid code format' });
-      return;
-    }
+socket.on('error', d => showError(d?.message || 'Server error'));
 
-    const session = {
-      code,
-      senderId: socket.id,
-      receivers: new Map(), // Multi-receiver support: Map<peerId, {socketId, joinedAt}>
-      createdAt: Date.now(),
-      expiresAt: Date.now() + 180000
-    };
-    
-    sessions.set(code, session);
-    log.success(`📝 SESSION CREATED: Code="${code}" | Sender="${socket.id.substring(0, 12)}..."`);
-    log.info(`📊 Total active sessions: ${sessions.size}`);
+socket.on('receiver-ready-ack', ({ peerId }) => {
+  myPeerId = peerId;
+  setStatus('Connecting to sender…');
+  setupPeerConnection();
+});
 
-    socket.emit('sender-ready-ack', { code });
-    log.debug(`✅ ACK sent to sender for code: ${code}`);
+socket.on('offer', async ({ offer, peerId }) => {
+  if (!pc) return;
+  try {
+    await pc.setRemoteDescription(new RTCSessionDescription(offer));
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    socket.emit('answer', { code: CODE, answer, peerId });
+  } catch (e) {
+    showError('WebRTC handshake failed: ' + e.message);
+  }
+});
 
-    const expiryTimer = setTimeout(() => {
-      if (sessions.has(code)) {
-        sessions.delete(code);
-        sessionExpiryMap.delete(code);
-        io.to(socket.id).emit('code-expired', { code });
-        log.warn(`⏰ SESSION EXPIRED: ${code}`);
-      }
-    }, 180000);
+socket.on('ice-candidate', async ({ candidate }) => {
+  if (!pc || !candidate) return;
+  try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (_) {}
+});
 
-    sessionExpiryMap.set(code, expiryTimer);
-  });
+socket.on('peer-disconnected', () => {
+  // Only show error if we haven't already finished
+  if (!blobUrl) showError('Sender disconnected before the transfer completed.');
+});
 
-  socket.on('receiver-ready', (data) => {
-    const { code, startTime } = data;
-    log.event('receiver-ready', socket.id, { code });
+socket.on('code-expired', () => showError('This share code has expired. Ask the sender to generate a new one.'));
 
-    if (!sessions.has(code)) {
-      log.error(`❌ INVALID/EXPIRED CODE: "${code}" from receiver ${socket.id.substring(0, 8)}...`);
-      socket.emit('error', { message: 'Invalid or expired code' });
-      return;
-    }
+// ── WebRTC ────────────────────────────────────────────────────────────────────
+function setupPeerConnection() {
+  pc = new RTCPeerConnection(RTC_CONFIG);
 
-    const session = sessions.get(code);
-    
-    // Generate unique peerId for this receiver
-    const peerId = `peer-${Math.random().toString(36).substr(2, 9)}`;
-    
-    // Add receiver to the receivers map
-    session.receivers.set(peerId, {
-      socketId: socket.id,
-      joinedAt: Date.now()
-    });
-    
-    sessions.set(code, session);
+  pc.onicecandidate = e => {
+    if (e.candidate) socket.emit('ice-candidate', { code: CODE, candidate: e.candidate, peerId: myPeerId });
+  };
 
-    log.success(`🟢 RECEIVER CONNECTED: "${socket.id.substring(0, 12)}..." for code "${code}" | peerId="${peerId}"`);
-    log.info(`📊 Receivers for code "${code}": ${session.receivers.size}`);
-    
-    // Send ack to receiver with peerId and startTime for latency measurement
-    socket.emit('receiver-ready-ack', { code, peerId, startTime });
-    log.debug(`✅ receiver-ready-ack sent with peerId: ${peerId}`);
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') setStatus('Connected — waiting for file…');
+    if (pc.connectionState === 'failed')    showError('P2P connection failed. You may be behind a restrictive firewall.');
+  };
 
-    // Notify sender that a receiver joined (with peerId)
-    log.info(`📢 NOTIFYING SENDER that receiver joined for code: "${code}" with peerId: "${peerId}"`);
-    io.to(session.senderId).emit('receiver-joined', { code, peerId });
-    log.success(`📡 "receiver-joined" event SENT to sender - WebRTC handshake starting with peerId: ${peerId}`);
-  });
+  // The sender opens the data channel; we receive it here
+  pc.ondatachannel = e => {
+    const dc = e.channel;
+    dc.binaryType = 'arraybuffer';
 
-  socket.on('offer', (data) => {
-    const { code, offer, peerId, startTime } = data;
-    log.event('offer', socket.id, { code, peerId, offerType: offer?.type });
+    dc.onmessage = ev => {
+      if (typeof ev.data === 'string') {
+        const msg = JSON.parse(ev.data);
 
-    if (!sessions.has(code)) {
-      log.error(`❌ Offer for unknown code: ${code}`);
-      return;
-    }
+        if (msg.type === 'META') {
+          meta = msg;
+          chunks = [];
+          lastBytes = 0; lastTime = Date.now();
 
-    const session = sessions.get(code);
-    
-    if (!peerId || !session.receivers.has(peerId)) {
-      log.warn(`⚠️  Offer received for unknown peerId: ${peerId} on code ${code}`);
-      return;
-    }
+          // Switch to receiving UI
+          document.getElementById('recv-name').textContent = msg.name;
+          document.getElementById('recv-size').textContent = formatBytes(msg.size);
+          setFileIcon(msg.name);
+          show('s-receiving');
 
-    const receiverSocketId = session.receivers.get(peerId).socketId;
-
-    log.info(`📨 RELAYING OFFER (SDP) from Sender to Receiver`);
-    log.debug(`   Code: ${code}`);
-    log.debug(`   PeerId: ${peerId}`);
-    log.debug(`   Type: ${offer?.type}`);
-    
-    io.to(receiverSocketId).emit('offer', {
-      code: code,
-      offer: offer,
-      peerId: peerId,
-      startTime: startTime  // Pass through startTime for latency measurement
-    });
-    
-    log.success(`✅ Offer relayed successfully for code: "${code}", peerId: "${peerId}"`);
-  });
-
-  socket.on('answer', (data) => {
-    const { code, answer, peerId, startTime } = data;
-    log.event('answer', socket.id, { code, peerId, answerType: answer?.type });
-
-    if (!sessions.has(code)) {
-      log.error(`❌ Answer for unknown code: ${code}`);
-      return;
-    }
-
-    const session = sessions.get(code);
-
-    log.info(`📨 RELAYING ANSWER (SDP) from Receiver to Sender`);
-    log.debug(`   Code: ${code}`);
-    log.debug(`   PeerId: ${peerId}`);
-    log.debug(`   Type: ${answer?.type}`);
-    
-    io.to(session.senderId).emit('answer', {
-      code: code,
-      answer: answer,
-      peerId: peerId,
-      startTime: startTime  // Pass through startTime for latency measurement
-    });
-    
-    log.success(`✅ Answer relayed successfully for code: "${code}", peerId: "${peerId}"`);
-  });
-
-  socket.on('ice-candidate', (data) => {
-    const { code, candidate, peerId } = data;
-    
-    if (!sessions.has(code)) {
-      log.warn(`⚠️  ICE candidate for unknown code: ${code}`);
-      return;
-    }
-    
-    const session = sessions.get(code);
-    let targetId = null;
-    
-    // Determine target: if sender is sending, target is receiver; otherwise target is sender
-    if (session.senderId === socket.id && peerId) {
-      // Sender is sending to a specific receiver
-      const receiverInfo = session.receivers.get(peerId);
-      if (receiverInfo) targetId = receiverInfo.socketId;
-    } else if (peerId) {
-      // Receiver is sending to sender
-      targetId = session.senderId;
-    }
-    
-    if (targetId) {
-      io.to(targetId).emit('ice-candidate', {
-        code: code,
-        candidate: candidate,
-        peerId: peerId
-      });
-      log.debug(`🧊 ICE candidate relayed for code: ${code}, peerId: ${peerId}`);
-    }
-  });
-
-  // Peer complete transfer
-  socket.on('peer-complete', (data) => {
-    const { code, peerId } = data;
-    log.event('peer-complete', socket.id, { code, peerId });
-
-    if (!sessions.has(code)) {
-      log.warn(`⚠️  peer-complete for unknown code: ${code}`);
-      return;
-    }
-
-    const session = sessions.get(code);
-
-    // If receiver is reporting completion, notify sender
-    if (session.senderId !== socket.id && session.receivers.has(peerId)) {
-      log.success(`✅ Receiver ${peerId} completed transfer for code: ${code}`);
-      io.to(session.senderId).emit('peer-complete', {
-        code: code,
-        peerId: peerId
-      });
-    }
-  });
-
-  socket.on('disconnect', () => {
-    log.warn(`🔴 CLIENT DISCONNECTED: ${socket.id.substring(0, 12)}...`);
-    
-    let cleanedCount = 0;
-    for (const [code, session] of sessions.entries()) {
-      if (session.senderId === socket.id) {
-        // Sender disconnected - notify all receivers
-        log.warn(`  └─ Cleaning up session: "${code}" (was SENDER)`);
-        for (const [peerId, receiverInfo] of session.receivers.entries()) {
-          io.to(receiverInfo.socketId).emit('peer-disconnected', { code, peerId });
-          log.info(`  └─ Notified receiver ${peerId} that sender disconnected`);
+        } else if (msg.type === 'END') {
+          completeTransfer();
         }
-        sessions.delete(code);
-        const timer = sessionExpiryMap.get(code);
-        if (timer) clearTimeout(timer);
-        sessionExpiryMap.delete(code);
-        cleanedCount++;
+
       } else {
-        // Check if this socket is one of the receivers
-        let wasReceiver = false;
-        for (const [peerId, receiverInfo] of session.receivers.entries()) {
-          if (receiverInfo.socketId === socket.id) {
-            log.warn(`  └─ Cleaning up session: "${code}" (was RECEIVER with peerId: ${peerId})`);
-            io.to(session.senderId).emit('peer-disconnected', { code, peerId });
-            log.info(`  └─ Notified sender that receiver ${peerId} disconnected`);
-            session.receivers.delete(peerId);
-            wasReceiver = true;
-            cleanedCount++;
-            break;
-          }
-        }
-        // Update session if we removed a receiver
-        if (wasReceiver) {
-          sessions.set(code, session);
-        }
+        // Binary chunk
+        chunks.push(new Uint8Array(ev.data));
+        const received = chunks.reduce((s, c) => s + c.length, 0);
+        updateProgress(received, meta ? meta.size : 0);
       }
-    }
-    
-    log.info(`🧹 Cleaned ${cleanedCount} session(s) | Remaining: ${sessions.size} active sessions`);
-    log.info(`📊 Current connections: ${io.engine.clientsCount}`);
-  });
+    };
 
-  socket.on('error', (error) => {
-    log.error(`Socket error from ${socket.id.substring(0, 8)}...: ${error}`);
-  });
-});
+    dc.onerror = () => showError('Data channel error during transfer.');
+  };
+}
 
-io.on('error', (error) => {
-  log.error(`Socket.IO Server Error: ${error.message}`);
-});
+function setFileIcon(name) {
+  const ext = name.slice(name.lastIndexOf('.')).toLowerCase();
+  const map = {
+    '.pdf':'📄', '.doc':'📝', '.docx':'📝',
+    '.xls':'📊', '.xlsx':'📊',
+    '.ppt':'📋', '.pptx':'📋',
+    '.png':'🖼️', '.jpg':'🖼️', '.jpeg':'🖼️', '.gif':'🖼️', '.webp':'🖼️',
+    '.mp4':'🎬', '.mov':'🎬', '.avi':'🎬', '.mkv':'🎬',
+    '.mp3':'🎵', '.wav':'🎵',
+    '.zip':'🗜️', '.rar':'🗜️', '.7z':'🗜️',
+    '.txt':'📃', '.csv':'📃', '.json':'📃',
+  };
+  document.querySelector('.file-icon').textContent = map[ext] || '📁';
+}
 
+function completeTransfer() {
+  const blob = new Blob(chunks, { type: meta?.mime || 'application/octet-stream' });
+  blobUrl = URL.createObjectURL(blob);
+
+  document.getElementById('done-name').textContent = meta?.name || 'file';
+  document.getElementById('done-size').textContent = formatBytes(blob.size);
+  show('s-complete');
+
+  // Wire download button
+  const dlBtn = document.getElementById('download-btn');
+  dlBtn.onclick = () => {
+    const a = Object.assign(document.createElement('a'), { href: blobUrl, download: meta?.name || 'download' });
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  };
+
+  // Wire Web Share API button (mobile browsers support this natively)
+  const shareBtn = document.getElementById('share-btn');
+  if (navigator.canShare) {
+    shareBtn.style.display = 'block';
+    shareBtn.onclick = async () => {
+      try {
+        const file = new File(chunks.map(c => new Uint8Array(c)), meta?.name || 'file', { type: meta?.mime });
+        if (navigator.canShare({ files: [file] })) {
+          await navigator.share({ files: [file], title: meta?.name });
+        } else {
+          // Fallback: share the URL/link
+          await navigator.share({ title: 'Droply file', text: meta?.name });
+        }
+      } catch (_) {}
+    };
+  }
+
+  socket.emit('peer-complete', { code: CODE, peerId: myPeerId });
+
+  // Trigger auto-download on mobile after a short delay
+  // (browsers require a user gesture for downloads; we already have one from page load)
+  // Instead we just highlight the button — don't force-download without user tap
+}
+</script>
+</body>
+</html>`;
+}
+
+// ── Start ─────────────────────────────────────────────────────────────────────
 server.listen(PORT, () => {
-  console.log('\n');
-  console.log('╔════════════════════════════════════════════════════════╗');
-  console.log('║   🚀 DROPLY SIGNALING SERVER STARTED                   ║');
-  console.log('╚════════════════════════════════════════════════════════╝');
-  log.success(`Server running on http://localhost:${PORT}`);
-  log.info(`📊 Health check: http://localhost:${PORT}/health`);
-  log.info(`⚙️  Socket.IO optimized for fast connections`);
-  log.info(`🔍 All events are being logged with timestamps`);
-  console.log('\n');
+  log.success(`Droply server running on :${PORT}`);
 });
 
-process.on('SIGTERM', () => {
-  log.warn('SIGTERM received, shutting down gracefully...');
-  server.close(() => {
-    log.success('Server closed');
-    process.exit(0);
-  });
-});
-
-process.on('SIGINT', () => {
-  log.warn('SIGINT received, shutting down gracefully...');
-  server.close(() => {
-    log.success('Server closed');
-    process.exit(0);
-  });
-});
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
+process.on('SIGINT',  () => server.close(() => process.exit(0)));
