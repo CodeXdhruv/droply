@@ -1,202 +1,146 @@
 // ===== LOGGING =====
 const Logger = {
-  log: (msg, data = '') => console.log(`📝 ${msg}`, data),
-  success: (msg, data = '') => console.log(`✅ ${msg}`, data),
-  error: (msg, data = '') => console.error(`❌ ${msg}`, data),
-  warn: (msg, data = '') => console.warn(`⚠️ ${msg}`, data),
-  debug: (msg, data = '') => console.log(`🔍 ${msg}`, data)
+  log:     (msg, ...a) => console.log(`📝 ${msg}`, ...a),
+  success: (msg, ...a) => console.log(`✅ ${msg}`, ...a),
+  error:   (msg, ...a) => console.error(`❌ ${msg}`, ...a),
+  warn:    (msg, ...a) => console.warn(`⚠️ ${msg}`, ...a),
 };
 
 // ===== CONFIG =====
-const SERVER_URL = 'https://droply-bxti.onrender.com';
-const RTC_CONFIG = {
+const SERVER_URL  = 'https://droply-bxti.onrender.com';
+const RTC_CONFIG  = {
   iceServers: [
-    // STUN servers (fast, for direct connections)
-    { urls: ['stun:stun.l.google.com:19302'] },
-    { urls: ['stun:stun1.l.google.com:19302'] },
-    { urls: ['stun:stun2.l.google.com:19302'] },
-    
-    // TURN servers (fallback for firewall-restricted networks)
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
     {
-      urls: ['turn:openrelay.metered.ca:80'],
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls:       'turn:openrelay.metered.ca:443',
+      username:   'openrelayproject',
+      credential: 'openrelayproject',
     },
-    {
-      urls: ['turn:openrelay.metered.ca:443'],
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    }
   ],
-  iceCandidatePoolSize: 5  // Reduced from 15 for faster gathering
+  iceCandidatePoolSize: 4,
 };
-const RTC_OFFER_OPTIONS = { offerToReceiveAudio: false, offerToReceiveVideo: false, voiceActivityDetection: false, iceRestart: false };
-const CHUNK_SIZE = 65536;
+const CHUNK_SIZE    = 65536;        // 64 KB
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
-const EXPIRY_TIME = 120;
-const CONNECTION_TIMEOUT = 30000;
+const EXPIRY_TIME   = 120;          // seconds
 
-const SUPPORTED_FILE_TYPES = {
-  '.png':'Image','.jpg':'Image','.jpeg':'Image','.gif':'Image','.bmp':'Image','.webp':'Image','.svg':'Image',
-  '.pdf':'PDF','.doc':'Word','.docx':'Word','.xls':'Excel','.xlsx':'Excel','.ppt':'PPT','.pptx':'PPT',
-  '.txt':'Text','.csv':'CSV','.json':'JSON','.xml':'XML',
-  '.zip':'Archive','.rar':'Archive','.7z':'Archive','.tar':'Archive','.gz':'Archive',
-  '.mp3':'Audio','.wav':'Audio','.mp4':'Video','.avi':'Video','.mov':'Video','.mkv':'Video',
-  '.exe':'Executable','.msi':'Installer','.apk':'Android','.iso':'ISO'
-};
+const SUPPORTED_EXTENSIONS = new Set([
+  '.png','.jpg','.jpeg','.gif','.bmp','.webp','.svg',
+  '.pdf','.doc','.docx','.xls','.xlsx','.ppt','.pptx',
+  '.txt','.csv','.json','.xml',
+  '.zip','.rar','.7z','.tar','.gz',
+  '.mp3','.wav','.mp4','.avi','.mov','.mkv',
+  '.exe','.msi','.apk','.iso',
+]);
 
 function validateFile(file) {
-  if (file.size > MAX_FILE_SIZE) return { valid: false, message: `File too large (${(file.size/1024/1024).toFixed(1)}MB > 100MB)` };
-  if (file.size === 0) return { valid: false, message: 'Cannot send empty files' };
-  const ext = file.name.toLowerCase().substring(file.name.lastIndexOf('.'));
-  if (!SUPPORTED_FILE_TYPES[ext]) return { valid: false, message: `File type ${ext} not supported` };
-  return { valid: true, message: 'OK', fileType: SUPPORTED_FILE_TYPES[ext] };
+  if (file.size === 0)             return { valid: false, message: 'Cannot send empty files' };
+  if (file.size > MAX_FILE_SIZE)   return { valid: false, message: `File too large (${(file.size/1024/1024).toFixed(1)} MB > 100 MB)` };
+  const ext = file.name.slice(file.name.lastIndexOf('.')).toLowerCase();
+  if (!SUPPORTED_EXTENSIONS.has(ext)) return { valid: false, message: `File type ${ext} not supported` };
+  return { valid: true };
 }
 
 // ===== GLOBAL STATE =====
-let socket = null, selectedFile = null;
-let isSender = false;
-const peerConnections = new Map();
-const dataChannels = new Map();
-const peerProgress = new Map();
-let preWarmConnection = null;
-let chunkCache = [];
-let fileBuffered = false;
-let myPeerId = null; // for receiver
-let timerInterval = null;
-let transferStartTime = 0, lastBytesUpdate = 0, lastTimeUpdate = 0;
-let transferState = { isTransferring: false, totalSize: 0, sentBytes: 0, receivedBytes: 0 };
-let receivedFileChunks = [], receivedFileMetadata = null, receivedBlobUrl = null;
+let socket         = null;
+let selectedFile   = null;
+let isSender       = false;
+let generatedCode  = '';
+let myPeerId       = null;         // receiver only
+let timerInterval  = null;
+let chunkCache     = [];           // ArrayBuffer slices, read-only after buffering
 
-let generatedCodeRaw = '';
+// Multi-receiver (sender side)
+const peerConnections = new Map(); // peerId → RTCPeerConnection
+const dataChannels    = new Map(); // peerId → RTCDataChannel
+const peerProgress    = new Map(); // peerId → { sent, total, done }
+// Each pump runs independently; no shared mutable offset between receivers
+const peerPumps       = new Map(); // peerId → { cancel: fn } — lets us abort a stalled pump
 
-// ===== UI STATE VARIABLES (for the new template) =====
+// Receiver side — single connection
+let recvPc      = null;
+let recvDc      = null;
+let recvChunks  = [];
+let recvMeta    = null;
+let recvBlobUrl = null;
+
 let currentScreen = 'screen-splash';
-let prevScreen = 'screen-send';
+let prevScreen    = 'screen-send';
 
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', () => {
   Logger.log('Droply initialized');
-  
-  // Check if QRCode library is loaded
-  if (typeof QRCode === 'undefined') {
-    Logger.error('QRCode library not loaded! Check qrcode.min.js');
-  } else {
-    Logger.success('QRCode library loaded successfully');
-  }
-  
+  if (typeof QRCode === 'undefined') Logger.error('QRCode library not loaded');
   initSocket();
   wireEventListeners();
   initTheme();
 });
 
+// ===== EVENT WIRING =====
 function wireEventListeners() {
-  // Splash
   document.getElementById('get-started-btn').addEventListener('click', () => showScreen('screen-send'));
 
-  // Tabs (send screen)
-  document.getElementById('tab-send').addEventListener('click', () => switchTab('send'));
+  document.getElementById('tab-send').addEventListener('click',    () => switchTab('send'));
   document.getElementById('tab-receive').addEventListener('click', () => switchTab('receive'));
 
-  // Settings buttons (all screens use .settings-btn class)
-  document.querySelectorAll('.settings-btn').forEach(btn => {
-    btn.addEventListener('click', () => showScreen('screen-settings'));
-  });
-
-  // Back button
+  document.querySelectorAll('.settings-btn').forEach(btn =>
+    btn.addEventListener('click', () => showScreen('screen-settings'))
+  );
   document.getElementById('back-btn').addEventListener('click', () => showScreen(prevScreen || 'screen-send'));
 
-  // Drag & drop
   const dropZone = document.getElementById('drop-zone');
-  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('dragover'); });
-  dropZone.addEventListener('dragleave', (e) => {
-    // Only remove class if truly leaving the zone (not entering a child)
-    if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove('dragover');
-  });
-  dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('dragover');
-    if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]);
-  });
+  dropZone.addEventListener('dragover',  e => { e.preventDefault(); dropZone.classList.add('dragover'); });
+  dropZone.addEventListener('dragleave', e => { if (!dropZone.contains(e.relatedTarget)) dropZone.classList.remove('dragover'); });
+  dropZone.addEventListener('drop',      e => { e.preventDefault(); dropZone.classList.remove('dragover'); if (e.dataTransfer.files[0]) handleFile(e.dataTransfer.files[0]); });
 
-  // Remove file button
   document.getElementById('remove-file-btn').addEventListener('click', removeFile);
-
-  // Generate code
   document.getElementById('generate-btn').addEventListener('click', generateCode);
 
-  // Receive code input
-  document.getElementById('receive-code-input').addEventListener('input', function() {
-    handleCodeInput(this);
+  document.getElementById('receive-code-input').addEventListener('input', function () {
+    const clean = this.value.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+    this.value = clean;
+    document.getElementById('connect-btn').disabled = clean.length < 6;
   });
-
-  // Connect button
   document.getElementById('connect-btn').addEventListener('click', startReceive);
 
-  // Copy / Share code
-  document.getElementById('copy-btn').addEventListener('click', copyCode);
+  document.getElementById('copy-btn').addEventListener('click',  copyCode);
   document.getElementById('share-btn').addEventListener('click', shareCode);
 
-  // Code screen tab (receive tab on code screen)
   const tabReceiveCode = document.getElementById('tab-receive-code');
   if (tabReceiveCode) tabReceiveCode.addEventListener('click', () => switchTab('receive'));
 
-  // Complete screen
   document.getElementById('open-file-btn').addEventListener('click', downloadFile);
   document.getElementById('done-btn').addEventListener('click', resetAll);
 
-  // Settings items
   document.getElementById('theme-toggle-item').addEventListener('click', toggleTheme);
   document.getElementById('clear-history-item').addEventListener('click', clearHistory);
 }
 
-// ===== UI NAVIGATION =====
+// ===== NAVIGATION =====
 function showScreen(id) {
-  const screens = document.querySelectorAll('.screen');
-  screens.forEach(s => s.classList.remove('active'));
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   const target = document.getElementById(id);
-  if (target) {
-    target.classList.add('active');
-    if (currentScreen !== id && id !== 'screen-settings') {
-      prevScreen = currentScreen;
-    }
-    currentScreen = id;
-  }
+  if (!target) return;
+  target.classList.add('active');
+  if (currentScreen !== id && id !== 'screen-settings') prevScreen = currentScreen;
+  currentScreen = id;
 }
 
 function switchTab(tab) {
-  const sendContent = document.getElementById('send-tab-content');
-  const receiveContent = document.getElementById('receive-tab-content');
-  const tabSend = document.getElementById('tab-send');
-  const tabReceive = document.getElementById('tab-receive');
-
-  if (tab === 'send') {
-    isSender = true;
-    sendContent.style.display = 'flex';
-    receiveContent.style.display = 'none';
-    tabSend.classList.add('active');
-    tabReceive.classList.remove('active');
-  } else {
-    isSender = false;
-    sendContent.style.display = 'none';
-    receiveContent.style.display = 'flex';
-    tabSend.classList.remove('active');
-    tabReceive.classList.add('active');
-  }
+  const isSend = tab === 'send';
+  isSender = isSend;
+  document.getElementById('send-tab-content').style.display    = isSend ? 'flex' : 'none';
+  document.getElementById('receive-tab-content').style.display = isSend ? 'none' : 'flex';
+  document.getElementById('tab-send').classList.toggle('active',    isSend);
+  document.getElementById('tab-receive').classList.toggle('active', !isSend);
 }
 
 // ===== FILE HANDLING =====
 function handleFile(file) {
-  if (!file) return;
   const result = validateFile(file);
-  if (!result.valid) {
-    showToast('error', 'Invalid File', result.message);
-    return;
-  }
-  
-  selectedFile = file;
+  if (!result.valid) { showToast('error', 'Invalid file', result.message); return; }
 
-  // Hide the drop zone so the chip + button are fully visible
+  selectedFile = file;
   document.getElementById('drop-zone').style.display = 'none';
 
   const chip = document.getElementById('file-chip');
@@ -204,699 +148,507 @@ function handleFile(file) {
   document.getElementById('chip-name').textContent = file.name;
   document.getElementById('chip-size').textContent = formatBytes(file.size);
   document.getElementById('generate-btn').disabled = false;
-  bufferFileIntoRAM(file);
+
+  bufferFile(file);
 }
 
-async function bufferFileIntoRAM(file) {
+async function bufferFile(file) {
   chunkCache = [];
-  fileBuffered = false;
-  const buffer = await file.arrayBuffer();
-  for (let i = 0; i < buffer.byteLength; i += CHUNK_SIZE) {
-    chunkCache.push(buffer.slice(i, i + CHUNK_SIZE));
+  const buf = await file.arrayBuffer();
+  for (let i = 0; i < buf.byteLength; i += CHUNK_SIZE) {
+    chunkCache.push(buf.slice(i, i + CHUNK_SIZE));
   }
-  fileBuffered = true;
+  Logger.success('File buffered', chunkCache.length + ' chunks');
 }
 
 function removeFile() {
   selectedFile = null;
-  chunkCache = [];
-  fileBuffered = false;
+  chunkCache   = [];
   document.getElementById('file-chip').classList.remove('visible');
   document.getElementById('generate-btn').disabled = true;
-  // Restore the drop zone
   document.getElementById('drop-zone').style.display = '';
 }
 
-
 function formatBytes(bytes) {
-  if (!bytes) return '0 B';
-  if (bytes < 1024) return bytes + ' B';
-  if (bytes < 1024*1024) return (bytes/1024).toFixed(1) + ' KB';
-  return (bytes/(1024*1024)).toFixed(1) + ' MB';
+  if (!bytes)          return '0 B';
+  if (bytes < 1024)    return bytes + ' B';
+  if (bytes < 1048576) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / 1048576).toFixed(1) + ' MB';
 }
 
-function overlayMonkeyOnQR(container) {
-  // Wait for QR canvas or image to be rendered before overlaying
-  setTimeout(() => {
-    let canvas = container.querySelector('canvas');
-    let img = container.querySelector('img');
-    
-    if (!canvas && !img) {
-      Logger.warn('QR canvas or img not found for monkey overlay');
-      return;
-    }
-    
-    try {
-      // If there's an image, convert it to canvas for manipulation
-      if (img && !canvas) {
-        const tempCanvas = document.createElement('canvas');
-        tempCanvas.width = 160;
-        tempCanvas.height = 160;
-        const ctx = tempCanvas.getContext('2d');
-        ctx.drawImage(img, 0, 0, 160, 160);
-        canvas = tempCanvas;
-      }
-      
-      if (!canvas) return;
-      
-      const ctx = canvas.getContext('2d');
-      const centerX = canvas.width / 2;
-      const centerY = canvas.height / 2;
-      const circleRadius = 28; // Circle around monkey
-      
-      // Draw white background circle
-      ctx.beginPath();
-      ctx.arc(centerX, centerY, circleRadius, 0, 2 * Math.PI);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-      
-      // Draw subtle shadow
-      ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
-      ctx.lineWidth = 0.5;
-      ctx.stroke();
-      
-      // Draw monkey SVG as image
-      const svgData = `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="22" cy="58" r="14" fill="#C8874B" />
-        <circle cx="98" cy="58" r="14" fill="#C8874B" />
-        <circle cx="22" cy="58" r="9" fill="#E8A570" />
-        <circle cx="98" cy="58" r="9" fill="#E8A570" />
-        <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
-        <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
-        <circle cx="60" cy="52" r="32" fill="#C8874B" />
-        <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
-        <circle cx="50" cy="48" r="6" fill="white" />
-        <circle cx="70" cy="48" r="6" fill="white" />
-        <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
-        <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
-        <circle cx="52" cy="48" r="1.2" fill="white" />
-        <circle cx="72" cy="48" r="1.2" fill="white" />
-        <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
-        <circle cx="57.5" cy="57.5" r="1.5" fill="#8B4513" />
-        <circle cx="62.5" cy="57.5" r="1.5" fill="#8B4513" />
-        <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round" />
-      </svg>`;
-      
-      const monkeyImg = new Image();
-      monkeyImg.onload = () => {
-        // Draw monkey image centered in the white circle (scaled to 40x40)
-        const monkeySize = 40;
-        ctx.drawImage(monkeyImg, centerX - monkeySize / 2, centerY - monkeySize / 2, monkeySize, monkeySize);
-        Logger.success('Monkey overlay rendered on QR code');
-        
-        // If we created a temp canvas, update the container with it
-        if (img && canvas !== container.querySelector('canvas')) {
-          container.innerHTML = '';
-          container.appendChild(canvas);
-        }
-      };
-      monkeyImg.onerror = () => {
-        Logger.error('Failed to load monkey SVG for overlay');
-      };
-      monkeyImg.src = 'data:image/svg+xml;base64,' + btoa(svgData);
-    } catch (err) {
-      Logger.error('Error overlaying monkey on QR', err);
-    }
-  }, 250);
-}
-
-function updateReceiverBadge() {
-  const badge = document.getElementById('receiver-count-badge');
-  const container = document.getElementById('receiver-list-container');
-  if (!badge || !container) return;
-  
-  const count = peerConnections.size;
-  if (count === 0) {
-    badge.style.display = 'none';
-    container.innerHTML = '';
-    return;
-  }
-  
-  badge.style.display = 'block';
-  badge.textContent = `${count} receiver${count > 1 ? 's' : ''} connected`;
-  
-  container.innerHTML = '';
-  peerConnections.forEach((pc, peerId) => {
-    const prog = peerProgress.get(peerId);
-    const progressText = prog && prog.total > 0 ? Math.floor((prog.sent / prog.total) * 100) + '%' : 'Connecting...';
-    const isDone = prog && prog.sent > 0 && prog.sent >= prog.total;
-    
-    container.innerHTML += `
-      <div class="receiver-item">
-        <div class="receiver-item-left">
-          <span>📱</span>
-          <span>Receiver ${peerId.substring(0,4)}</span>
-        </div>
-        <div class="receiver-progress">
-          ${isDone ? '✅ Complete' : progressText}
-        </div>
-      </div>
-    `;
-  });
-}
-
-// ===== GENERATE CODE =====
+// ===== GENERATE CODE (SENDER) =====
 function generateCode() {
   if (!selectedFile) return;
-  
-  // Real implementation
-  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
-  let part1 = '', part2 = '';
-  for (let i = 0; i < 3; i++) part1 += chars[Math.floor(Math.random() * chars.length)];
-  for (let i = 0; i < 3; i++) part2 += chars[Math.floor(Math.random() * chars.length)];
-  generatedCodeRaw = part1 + part2;
 
-  Logger.success('Generated code', generatedCodeRaw);
-  
-  document.getElementById('display-code').textContent = part1 + ' • ' + part2;
+  const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+  let code = '';
+  for (let i = 0; i < 6; i++) code += chars[Math.floor(Math.random() * chars.length)];
+  generatedCode = code;
+
+  document.getElementById('display-code').textContent = code.slice(0, 3) + ' • ' + code.slice(3);
   document.getElementById('code-chip-name').textContent = selectedFile.name;
   document.getElementById('code-chip-size').textContent = formatBytes(selectedFile.size);
 
-  // Generate QR code with receiver URL
-  const receiverUrl = `${SERVER_URL}/receive?code=${generatedCodeRaw}`;
-  Logger.debug('QR receiver URL', receiverUrl);
-  
-  const qrContainer = document.getElementById('qr-canvas');
-  if (qrContainer) {
-    // Completely clear the container
-    qrContainer.innerHTML = '';
-    
-    try {
-      // Create a new instance with proper options
-      const qrOptions = {
-        text: receiverUrl,
-        width: 160,
-        height: 160,
-        colorDark: '#6C5CE7',
-        colorLight: '#ffffff',
-        correctLevel: QRCode.CorrectLevel.M,
-        useSVG: false
-      };
-      
-      // Generate QR code
-      new QRCode(qrContainer, qrOptions);
-      Logger.success('QR code generated successfully');
-      
-      // Wait for the QR code canvas to be fully rendered
-      setTimeout(() => {
-        const canvas = qrContainer.querySelector('canvas');
-        if (canvas) {
-          Logger.debug('QR canvas found, overlaying monkey...');
-          overlayMonkeyOnQR(qrContainer);
-        } else {
-          Logger.warn('QR canvas not found after generation');
-        }
-      }, 300);
-    } catch (err) {
-      Logger.error('QR generation failed', err);
-      qrContainer.innerHTML = '<p style="color: red; font-size: 12px;">QR Error</p>';
-    }
-  } else {
-    Logger.error('QR container not found');
+  // QR code
+  const receiverUrl  = `${SERVER_URL}/receive?code=${code}`;
+  const qrContainer  = document.getElementById('qr-canvas');
+  qrContainer.innerHTML = '';
+  try {
+    new QRCode(qrContainer, {
+      text:         receiverUrl,
+      width:        160,
+      height:       160,
+      colorDark:    '#6C5CE7',
+      colorLight:   '#ffffff',
+      correctLevel: QRCode.CorrectLevel.M,
+    });
+    // Monkey overlay after canvas is painted
+    setTimeout(() => overlayMonkeyOnQR(qrContainer), 300);
+  } catch (e) {
+    Logger.error('QR generation failed', e);
+    qrContainer.innerHTML = '<p style="color:red;font-size:12px">QR Error</p>';
   }
 
-  showScreen('screen-code');
-  updateReceiverBadge();
-  
-  // Connect to signaling server as sender
   isSender = true;
-  
-  // Pre-warm STUN connection (gather ICE candidates early)
-  if (!preWarmConnection) {
-    Logger.log('Pre-warming STUN connection...');
-    preWarmConnection = new RTCPeerConnection(RTC_CONFIG);
-    preWarmConnection.createDataChannel('warmup');
-    // This triggers ICE gathering without needing full connection
-  }
-  
-  // Notify server that sender is ready
-  socket.emit('sender-ready', { code: generatedCodeRaw });
-  Logger.log('Sent sender-ready event', { code: generatedCodeRaw });
-  
+  showScreen('screen-code');
+  socket.emit('sender-ready', { code });
   startTimer();
 }
 
 function startTimer() {
   clearInterval(timerInterval);
-  let timerSeconds = EXPIRY_TIME;
-  updateTimerDisplay(timerSeconds);
-  
+  let s = EXPIRY_TIME;
+  updateTimerDisplay(s);
   timerInterval = setInterval(() => {
-    timerSeconds--;
-    if (timerSeconds <= 0) {
+    s--;
+    updateTimerDisplay(s);
+    if (s <= 0) {
       clearInterval(timerInterval);
-      showToast('warning', 'Code Expired', 'This code is no longer valid.');
-      socket.emit('code-expired', { code: generatedCodeRaw });
+      showToast('warning', 'Code expired', 'This code is no longer valid.');
+      socket.emit('code-expired', { code: generatedCode });
       resetAll();
     }
-    updateTimerDisplay(timerSeconds);
   }, 1000);
 }
 
-function updateTimerDisplay(seconds) {
-  const m = Math.floor(seconds / 60).toString().padStart(2,'0');
-  const s = (seconds % 60).toString().padStart(2,'0');
+function updateTimerDisplay(s) {
   const el = document.getElementById('timer-display');
-  if (el) el.textContent = m + ':' + s;
+  if (el) el.textContent = String(Math.floor(s / 60)).padStart(2, '0') + ':' + String(s % 60).padStart(2, '0');
 }
 
-// ===== RECEIVE INPUT =====
-function handleCodeInput(input) {
-  const val = input.value.trim().toUpperCase();
-  input.value = val;
-  document.getElementById('connect-btn').disabled = val.length < 6;
-}
-
+// ===== RECEIVE (RECEIVER) =====
 function startReceive() {
-  const code = document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, '');
+  const code = document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, '').toUpperCase();
   if (code.length < 6) return;
-  
   isSender = false;
-  const startTime = Date.now();
-  Logger.success('Receiver starting connection', { code, timestamp: startTime });
   showScreen('screen-connecting');
-  
-  socket.emit('receiver-ready', { code, startTime });
+  socket.emit('receiver-ready', { code });
 }
 
-// ===== CORE TRANSFER LOGIC =====
+// ===== PEER CONNECTION — SENDER SIDE (multi-receiver) =====
 
-// Multi-receiver peer connection setup
-function startPeerConnectionForReceiver(peerId) {
-  Logger.log('Starting peer connection for receiver', peerId);
-  
-  if (peerConnections.has(peerId)) {
-    Logger.warn('Peer connection already exists for', peerId);
-    return;
-  }
-  
+// How much data we allow queued per channel before pausing.
+// 4 MB is generous but prevents the JS heap from ballooning on slow receivers.
+const BACKPRESSURE_HIGH = 4 * 1024 * 1024;  // pause sending
+const BACKPRESSURE_LOW  =     512 * 1024;   // resume sending (via bufferedamountlow)
+
+function createSenderPeer(peerId) {
+  if (peerConnections.has(peerId)) return;
+  Logger.log('Creating sender peer for', peerId);
+
   const pc = new RTCPeerConnection(RTC_CONFIG);
   peerConnections.set(peerId, pc);
-  peerProgress.set(peerId, { sent: 0, total: 0 });
-  
-  // Add connection timeout (15 seconds) with user feedback
-  const connectionTimer = setTimeout(() => {
-    const state = pc.connectionState;
-    if (state !== 'connected') {
-      Logger.error('Connection timeout after 15 seconds for peerId', peerId);
-      showToast('error', 'Connection Timeout', 'Taking longer than expected. Retrying...');
-      
-      // Auto-retry: emit receiver-ready again
-      setTimeout(() => {
-        Logger.log('Auto-retrying connection for peerId', peerId);
-        const code = document.getElementById('receive-code-input')?.value?.replace(/[^A-Z0-9]/gi, '');
-        if (code && code.length >= 6) {
-          socket.emit('receiver-ready', { code, startTime: Date.now() });
-        }
-      }, 2000);
-    }
-  }, 15000);
-  
-  setupPeerConnectionListeners(peerId, pc);
-  
-  if (isSender) {
-    // Sender creates offer
-    try {
-      const dc = pc.createDataChannel('file-transfer', { ordered: true, maxRetransmits: 3 });
-      dataChannels.set(peerId, dc);
-      setupDataChannelForReceiver(peerId, dc);
-      
-      pc.createOffer(RTC_OFFER_OPTIONS).then(offer => {
-        pc.setLocalDescription(offer);
-        socket.emit('offer', { code: generatedCodeRaw, offer, peerId });
-        Logger.log('Offer sent for peerId', peerId);
-      }).catch(e => Logger.error('Offer creation failed:', e));
-    } catch (e) {
-      Logger.error('Data channel creation failed:', e.message);
-    }
-  } else {
-    // Receiver waits for data channel
-    pc.ondatachannel = (event) => {
-      const dc = event.channel;
-      dataChannels.set(peerId, dc);
-      setupDataChannelForReceiver(peerId, dc);
-    };
-  }
-  
-  // Clear timeout on successful connection
+  peerProgress.set(peerId, { sent: 0, total: selectedFile ? selectedFile.size : 0, done: false });
+
+  pc.onicecandidate = e => {
+    if (e.candidate) socket.emit('ice-candidate', { code: generatedCode, candidate: e.candidate, peerId });
+  };
+
   pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'connected') {
-      clearTimeout(connectionTimer);
-      Logger.success('Connection established! Timeout cleared.', peerId);
+    Logger.log(`Sender peer ${peerId}:`, pc.connectionState);
+    if (pc.connectionState === 'failed' || pc.connectionState === 'closed') {
+      cancelPump(peerId);
+      peerConnections.delete(peerId);
+      dataChannels.delete(peerId);
+      peerProgress.delete(peerId);
+      updateReceiverBadge();
     }
   };
+
+  // ordered:true, no maxRetransmits — reliable delivery, TCP-like
+  const dc = pc.createDataChannel('file-transfer', { ordered: true });
+  dc.binaryType = 'arraybuffer';
+
+  // bufferedamountlow fires when the queue drains below BACKPRESSURE_LOW,
+  // which is how we resume a paused pump without polling.
+  dc.bufferedAmountLowThreshold = BACKPRESSURE_LOW;
+
+  dataChannels.set(peerId, dc);
+
+  dc.onopen = () => {
+    Logger.success('Channel open for', peerId);
+    showScreen('screen-transfer');
+    document.getElementById('transfer-filename').textContent = selectedFile.name;
+    startFilePump(peerId, dc);
+  };
+
+  dc.onerror = e => Logger.error('Channel error for', peerId, e);
+
+  pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false })
+    .then(offer => { pc.setLocalDescription(offer); socket.emit('offer', { code: generatedCode, offer, peerId }); })
+    .catch(e => Logger.error('Offer failed', e));
 }
 
-// Track peer connection state for a specific receiver
-function setupPeerConnectionListeners(peerId, pc) {
-  pc.onconnectionstatechange = () => {
-    const state = pc.connectionState;
-    Logger.log('Connection state for peerId', peerId, state);
-    
-    if (state === 'connected') {
-      if (!isSender) showScreen('screen-transfer');
-    } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-      if (isSender) {
-        peerConnections.delete(peerId);
-        dataChannels.delete(peerId);
-        peerProgress.delete(peerId);
-        updateReceiverBadge();
-      } else {
-        resetConnectionCore();
-        showScreen('screen-send');
-      }
+// ── Independent, event-driven pump per receiver ───────────────────────────────
+// Each receiver gets its own idx cursor into the shared (read-only) chunkCache.
+// The pump never touches another receiver's state.
+function startFilePump(peerId, dc) {
+  if (!selectedFile || chunkCache.length === 0) return;
+
+  const prog = peerProgress.get(peerId);
+  prog.total = selectedFile.size;
+
+  // Metadata first
+  dc.send(JSON.stringify({ type: 'META', name: selectedFile.name, size: selectedFile.size, mime: selectedFile.type }));
+
+  let idx       = 0;
+  let paused    = false;
+  let cancelled = false;
+
+  // Resume callback wired to the bufferedamountlow event
+  function onDrain() {
+    if (cancelled) return;
+    paused = false;
+    pump();
+  }
+  dc.addEventListener('bufferedamountlow', onDrain);
+
+  function pump() {
+    if (cancelled) return;
+
+    // Finished
+    if (idx >= chunkCache.length) {
+      dc.send(JSON.stringify({ type: 'END' }));
+      prog.sent = prog.total;
+      prog.done = true;
+      updateReceiverBadge();
+      socket.emit('peer-complete', { code: generatedCode, peerId });
+      dc.removeEventListener('bufferedamountlow', onDrain);
+      peerPumps.delete(peerId);
+      Logger.success('Transfer complete for', peerId);
+      return;
     }
-  };
-  
-  pc.onicecandidate = (e) => {
+
+    // Back-pressure: stop and let bufferedamountlow resume us
+    if (dc.bufferedAmount >= BACKPRESSURE_HIGH) {
+      paused = true;
+      return; // bufferedamountlow will call onDrain → pump()
+    }
+
+    const chunk = chunkCache[idx++];
+    dc.send(chunk);
+    prog.sent += chunk.byteLength;
+
+    // Throttle UI updates — only repaint every 16 ms (≈60 fps)
+    scheduleUIUpdate(peerId, prog.sent, prog.total);
+
+    // Yield to the event loop so ICE/signaling messages aren't starved.
+    // Using MessageChannel (microtask-ish but yields) is faster than setTimeout(0).
+    mcPort.postMessage(null);
+  }
+
+  // Store cancel handle so resetConnectionCore can stop runaway pumps
+  peerPumps.set(peerId, {
+    cancel: () => {
+      cancelled = true;
+      dc.removeEventListener('bufferedamountlow', onDrain);
+    },
+  });
+
+  // Wire MessageChannel to drive the pump loop without starving the event loop
+  const mc = new MessageChannel();
+  const mcPort = mc.port2;
+  mc.port1.onmessage = () => { if (!paused && !cancelled) pump(); };
+
+  pump(); // kick off
+}
+
+function cancelPump(peerId) {
+  const handle = peerPumps.get(peerId);
+  if (handle) { handle.cancel(); peerPumps.delete(peerId); }
+}
+
+// ── Throttled UI update (shared across all receivers — shows aggregate) ───────
+let uiRafPending = false;
+let uiSentTotal  = 0;
+let uiFileTotal  = 0;
+
+function scheduleUIUpdate(peerId, sent, total) {
+  // Aggregate across all receivers for the progress bar
+  uiFileTotal = total;
+  // For multi-receiver: show the slowest receiver's progress (most conservative)
+  let minSent = Infinity;
+  peerProgress.forEach(p => { if (!p.done && p.total > 0) minSent = Math.min(minSent, p.sent); });
+  uiSentTotal = minSent === Infinity ? sent : minSent;
+
+  if (!uiRafPending) {
+    uiRafPending = true;
+    requestAnimationFrame(() => {
+      uiRafPending = false;
+      updateRealProgress(uiSentTotal, uiFileTotal);
+      updateReceiverBadge();
+    });
+  }
+}
+
+// ===== PEER CONNECTION — RECEIVER SIDE =====
+function createReceiverPeer(peerId) {
+  Logger.log('Creating receiver peer for', peerId);
+  recvPc = new RTCPeerConnection(RTC_CONFIG);
+
+  recvPc.onicecandidate = e => {
     if (e.candidate) {
-      const code = isSender ? generatedCodeRaw : document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, '');
+      const code = document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, '').toUpperCase();
       socket.emit('ice-candidate', { code, candidate: e.candidate, peerId });
     }
   };
-  
-  pc.onicecandidateerror = (e) => {
-    Logger.warn('ICE error for peerId', peerId, e.errorCode);
+
+  recvPc.onconnectionstatechange = () => {
+    Logger.log('Receiver peer state:', recvPc.connectionState);
+    if (recvPc.connectionState === 'failed' || recvPc.connectionState === 'closed') {
+      showToast('warning', 'Disconnected', 'Connection to sender lost.');
+      resetConnectionCore();
+      showScreen('screen-send');
+    }
+  };
+
+  recvPc.ondatachannel = e => {
+    recvDc = e.channel;
+    recvDc.binaryType = 'arraybuffer';
+    recvDc.onmessage = ev => handleReceivedData(ev.data);
+    recvDc.onerror   = ev => Logger.error('Recv channel error', ev);
+    showScreen('screen-transfer');
   };
 }
 
-function setupDataChannelForReceiver(peerId, dc) {
-  dc.binaryType = 'arraybuffer';
-  
-  dc.onopen = () => {
-    Logger.success('Data channel open for peerId', peerId);
-    if (isSender && selectedFile) {
-      // Initialize progress tracking
-      const prog = peerProgress.get(peerId) || { sent: 0, total: selectedFile.size };
-      peerProgress.set(peerId, prog);
-      updateReceiverBadge();
-      
-      showScreen('screen-transfer');
-      if (!document.getElementById('transfer-filename').textContent) {
-        document.getElementById('transfer-filename').textContent = selectedFile.name;
-      }
-      transferStartTime = Date.now();
-      
-      // Send metadata and start transfer for this receiver
-      sendFileMetadataToReceiver(peerId, dc);
-      setTimeout(() => sendFileChunksToReceiver(peerId, dc), 100);
+function handleReceivedData(data) {
+  if (typeof data === 'string') {
+    const msg = JSON.parse(data);
+    if (msg.type === 'META') {
+      recvMeta = msg;
+      document.getElementById('transfer-filename').textContent = msg.name;
+    } else if (msg.type === 'END') {
+      finalizeReceive();
     }
-  };
-  
-  dc.onclose = () => {
-    Logger.warn('Data channel closed for peerId', peerId);
-  };
-  
-  dc.onerror = (e) => {
-    Logger.error('Data channel error for peerId', peerId, e);
-  };
-  
-  dc.onmessage = (e) => {
-    if (!isSender) {
-      handleDataMessage(e.data);
-    }
-  };
+  } else {
+    recvChunks.push(new Uint8Array(data));
+    const received = recvChunks.reduce((s, c) => s + c.length, 0);
+    updateRealProgress(received, recvMeta ? recvMeta.size : 0);
+  }
 }
 
-// Send file metadata to a specific receiver
-function sendFileMetadataToReceiver(peerId, dc) {
-  const meta = {
-    type: 'METADATA',
-    name: selectedFile.name,
-    size: selectedFile.size,
-    mimeType: selectedFile.type
-  };
-  dc.send(JSON.stringify(meta));
-  Logger.log('Metadata sent to peerId', peerId);
-}
-
-// Send file chunks with adaptive chunk sizing per receiver
-function sendFileChunksToReceiver(peerId, dc) {
-  const prog = peerProgress.get(peerId);
-  if (!prog) return;
-  
-  prog.total = selectedFile.size;
-  let offset = 0;
-  
-  const sendChunk = () => {
-    if (offset >= selectedFile.size) {
-      dc.send(JSON.stringify({ type: 'END' }));
-      prog.sent = prog.total;
-      updateReceiverBadge();
-      socket.emit('peer-complete', { code: generatedCodeRaw, peerId });
-      return;
-    }
-    
-    // Adaptive chunk sizing: default 64KB
-    let chunkSize = 65536;
-    const measuredSpeed = measuredSpeeds.get(peerId);
-    if (measuredSpeed) {
-      // Slow: 16KB, default: 64KB, fast: 256KB
-      if (measuredSpeed < 100 * 1024) chunkSize = 16384;
-      else if (measuredSpeed > 512 * 1024) chunkSize = 262144;
-    }
-    
-    // Check buffered amount for backpressure (per receiver)
-    if (dc.bufferedAmount > 16 * 1024 * 1024) {
-      setTimeout(sendChunk, 50);
-      return;
-    }
-    
-    // Send from cache if available, otherwise read from file
-    if (offset < chunkCache.length * CHUNK_SIZE && chunkCache[Math.floor(offset / CHUNK_SIZE)]) {
-      const cacheIndex = Math.floor(offset / CHUNK_SIZE);
-      const chunk = chunkCache[cacheIndex];
-      dc.send(chunk);
-      offset += chunk.byteLength;
-      prog.sent += chunk.byteLength;
-    } else {
-      // Fall back to reading file directly if cache not available
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const chunk = e.target.result;
-        dc.send(chunk);
-        offset += chunk.byteLength;
-        prog.sent += chunk.byteLength;
-        updateReceiverBadge();
-        setTimeout(sendChunk, 0);
-      };
-      reader.readAsArrayBuffer(selectedFile.slice(offset, offset + chunkSize));
-      return;
-    }
-    
-    updateReceiverBadge();
-    setTimeout(sendChunk, 0);
-  };
-  
-  sendChunk();
-}
-
-function setupPeerConnectionListeners() {
-  // Legacy function stub - real logic is in setupPeerConnectionListeners(peerId, pc)
-  // This is kept for backward compatibility
-}
-
-function handleDataMessage(data) {
-  try {
-    if (typeof data === 'string') {
-      const msg = JSON.parse(data);
-      if (msg.type === 'METADATA') {
-        receivedFileMetadata = msg;
-        document.getElementById('transfer-filename').textContent = msg.name;
-        transferStartTime = Date.now();
-        lastBytesUpdate = 0; lastTimeUpdate = Date.now();
-        showScreen('screen-transfer');
-      } else if (msg.type === 'END') {
-        completeReceive();
-      }
-    } else {
-      receivedFileChunks.push(new Uint8Array(data));
-      const received = receivedFileChunks.reduce((s, c) => s + c.length, 0);
-      transferState.receivedBytes = received;
-      updateRealProgress(received, receivedFileMetadata.size);
-    }
-  } catch(e) { Logger.error('Data message error:', e.message); }
-}
-
-function completeReceive() {
-  const blob = new Blob(receivedFileChunks, { type: receivedFileMetadata.mimeType });
-  receivedBlobUrl = URL.createObjectURL(blob);
-  showComplete(receivedFileMetadata.name, receivedFileMetadata.size);
+function finalizeReceive() {
+  const blob    = new Blob(recvChunks, { type: recvMeta.mime });
+  recvBlobUrl   = URL.createObjectURL(blob);
+  showComplete(recvMeta.name, recvMeta.size);
 }
 
 function downloadFile() {
-  if (!receivedBlobUrl && receivedFileChunks.length === 0) return;
-  if (!receivedBlobUrl) {
-    const blob = new Blob(receivedFileChunks, { type: receivedFileMetadata.mimeType });
-    receivedBlobUrl = URL.createObjectURL(blob);
-  }
-  const a = document.createElement('a');
-  a.href = receivedBlobUrl;
-  a.download = receivedFileMetadata?.name || 'download';
+  if (!recvBlobUrl) return;
+  const a = Object.assign(document.createElement('a'), { href: recvBlobUrl, download: recvMeta?.name || 'download' });
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
 }
 
+// ===== PROGRESS =====
+let lastBytesAt = 0, lastTimeAt = 0;
+
 function updateRealProgress(current, total) {
-  const progress = Math.min((current / total) * 100, 100);
-  
-  document.getElementById('transfer-percent').textContent = Math.floor(progress) + '%';
-  document.getElementById('progress-fill').style.width = progress + '%';
-  document.getElementById('transfer-bytes').textContent = formatBytes(current) + ' of ' + formatBytes(total);
+  if (!total) return;
+  const pct = Math.min(Math.floor((current / total) * 100), 100);
+
+  document.getElementById('transfer-percent').textContent = pct + '%';
+  document.getElementById('progress-fill').style.width    = pct + '%';
+  document.getElementById('transfer-bytes').textContent   = formatBytes(current) + ' of ' + formatBytes(total);
 
   const now = Date.now();
-  if (now - lastTimeUpdate > 500) {
-    const elapsed = (now - lastTimeUpdate) / 1000;
-    const bytesDiff = current - lastBytesUpdate;
-    const speedBytes = bytesDiff / elapsed;
-    document.getElementById('transfer-speed').textContent = formatBytes(speedBytes) + '/s';
-    lastBytesUpdate = current;
-    lastTimeUpdate = now;
+  if (now - lastTimeAt > 500) {
+    const speed = (current - lastBytesAt) / ((now - lastTimeAt) / 1000);
+    document.getElementById('transfer-speed').textContent = formatBytes(speed) + '/s';
+    lastBytesAt = current;
+    lastTimeAt  = now;
   }
-  
+
   const monkey = document.getElementById('transfer-monkey');
   if (monkey) {
-    monkey.style.left = (15 + (progress / 100) * 55) + '%';
-    monkey.style.bottom = (12 + Math.sin(progress * 0.3) * 15) + 'px';
+    monkey.style.left   = (15 + (pct / 100) * 55) + '%';
+    monkey.style.bottom = (12 + Math.sin(pct * 0.3) * 15) + 'px';
   }
 }
 
-// ===== UI STATE UPDATES =====
+// ===== RECEIVER BADGE (sender UI) =====
+function updateReceiverBadge() {
+  const badge     = document.getElementById('receiver-count-badge');
+  const container = document.getElementById('receiver-list-container');
+  if (!badge || !container) return;
 
+  const count = peerConnections.size;
+  if (!count) { badge.style.display = 'none'; container.innerHTML = ''; return; }
+
+  badge.style.display = 'block';
+  badge.textContent   = `${count} receiver${count > 1 ? 's' : ''} connected`;
+
+  container.innerHTML = '';
+  peerConnections.forEach((_, peerId) => {
+    const prog = peerProgress.get(peerId);
+    const pct  = prog && prog.total ? Math.floor((prog.sent / prog.total) * 100) : 0;
+    container.innerHTML += `
+      <div class="receiver-item">
+        <div class="receiver-item-left"><span>📱</span><span>Receiver ${peerId.slice(-4)}</span></div>
+        <div class="receiver-progress">${prog?.done ? '✅ Complete' : pct + '%'}</div>
+      </div>`;
+  });
+}
+
+// ===== COMPLETE =====
 function showComplete(fileName, fileSize) {
   clearInterval(timerInterval);
   document.getElementById('complete-filename').textContent = fileName;
-  document.getElementById('complete-size').textContent = formatBytes(fileSize);
+  document.getElementById('complete-size').textContent     = formatBytes(fileSize);
   showScreen('screen-complete');
   spawnConfetti();
-  showToast('success', isSender ? 'File Sent!' : 'File Received!', 'Transfer completed successfully.');
+  showToast('success', isSender ? 'File sent!' : 'File received!', 'Transfer complete.');
 }
 
 function spawnConfetti() {
   const container = document.getElementById('confetti-container');
-  if(!container) return;
+  if (!container) return;
   container.innerHTML = '';
-  const colors = ['#6C5CE7', '#F9CA24', '#00B894', '#E17055', '#74B9FF', '#FD79A8'];
+  const colors = ['#6C5CE7','#F9CA24','#00B894','#E17055','#74B9FF','#FD79A8'];
   for (let i = 0; i < 18; i++) {
-    const piece = document.createElement('div');
-    piece.style.cssText = `
-      position:absolute;
-      width:${6+Math.random()*5}px;
-      height:${6+Math.random()*5}px;
-      background:${colors[Math.floor(Math.random()*colors.length)]};
-      border-radius:${Math.random()>0.5?'50%':'3px'};
-      left:${10+Math.random()*80}%;
-      top:${10+Math.random()*30}%;
-      animation: confettiFall ${1+Math.random()*0.8}s ease-out ${Math.random()*0.5}s forwards;
-    `;
-    container.appendChild(piece);
+    const el = document.createElement('div');
+    el.style.cssText = `position:absolute;width:${6+Math.random()*5}px;height:${6+Math.random()*5}px;background:${colors[i%colors.length]};border-radius:${Math.random()>.5?'50%':'3px'};left:${10+Math.random()*80}%;top:${10+Math.random()*30}%;animation:confettiFall ${1+Math.random()*.8}s ease-out ${Math.random()*.5}s forwards`;
+    container.appendChild(el);
   }
+}
+
+// ===== RESET =====
+function resetConnectionCore() {
+  clearInterval(timerInterval);
+  timerInterval = null;
+
+  // Cancel all active pumps first (prevents sends on closing channels)
+  peerPumps.forEach((_, peerId) => cancelPump(peerId));
+
+  // Sender side
+  peerConnections.forEach(pc => { try { pc.close(); } catch (_) {} });
+  dataChannels.forEach(dc    => { try { dc.close();  } catch (_) {} });
+  peerConnections.clear();
+  dataChannels.clear();
+  peerProgress.clear();
+
+  // Receiver side
+  if (recvDc) { try { recvDc.close(); } catch (_) {} recvDc = null; }
+  if (recvPc) { try { recvPc.close(); } catch (_) {} recvPc = null; }
+  recvChunks = [];
+  recvMeta   = null;
+  if (recvBlobUrl) { URL.revokeObjectURL(recvBlobUrl); recvBlobUrl = null; }
+
+  uiSentTotal  = 0;
+  uiFileTotal  = 0;
+  uiRafPending = false;
+  lastBytesAt  = 0;
+  lastTimeAt   = 0;
+}
+
+function resetAll() {
+  resetConnectionCore();
+  removeFile();
+  generatedCode = '';
+  myPeerId      = null;
+  document.getElementById('receive-code-input').value = '';
+  document.getElementById('connect-btn').disabled = true;
+  showScreen('screen-send');
+  switchTab('send');
 }
 
 // ===== SOCKET.IO =====
 function initSocket() {
-  Logger.log(`Connecting to ${SERVER_URL}`);
+  Logger.log('Connecting to', SERVER_URL);
   try {
     socket = io(SERVER_URL, {
-      reconnection: true,
-      reconnectionDelay: 100,        // Reduced from 300ms for faster reconnection
-      reconnectionDelayMax: 500,     // Reduced from 1000ms
-      reconnectionAttempts: 10,      // Reduced from 15
-      transports: ['websocket'],     // WebSocket only, disable polling for lower latency
-      upgrade: false,                // Disable upgrade attempts
-      path: '/socket.io/',
-      extraHeaders: { 'X-Requested-With': 'XMLHttpRequest' }
+      transports:          ['websocket'],
+      reconnection:        true,
+      reconnectionDelay:   500,
+      reconnectionAttempts: 5,
     });
-  } catch(e) { Logger.error('Socket init failed:', e.message); return; }
+  } catch (e) { Logger.error('Socket init failed', e); return; }
 
-  socket.on('connect', () => { Logger.success('Connected', socket.id); document.querySelectorAll('.status-dot').forEach(el => el.style.background = 'var(--green)'); });
-  socket.on('disconnect', r => { Logger.warn('Disconnected', r); document.querySelectorAll('.status-dot').forEach(el => el.style.background = 'var(--red)'); });
-  socket.on('connect_error', e => { Logger.error('Connection error:', e.message); });
-  socket.on('error', d => { Logger.error('Server error:', d); showToast('error', 'Error', d?.message||'Server error'); });
-  socket.on('reconnect', () => { document.querySelectorAll('.status-dot').forEach(el => el.style.background = 'var(--green)'); });
+  socket.on('connect',       () => { Logger.success('Socket connected', socket.id); setStatusDot('var(--green)'); });
+  socket.on('disconnect',    r  => { Logger.warn('Socket disconnected', r);         setStatusDot('var(--red)');   });
+  socket.on('connect_error', e  => Logger.error('Socket connect error', e.message));
+  socket.on('error',         d  => { Logger.error('Server error', d); showToast('error', 'Error', d?.message || 'Server error'); });
+
+  // ── Sender events ──
 
   socket.on('sender-ready-ack', d => Logger.success('Sender ACK', d));
-  
-  // Multi-receiver: receiver joins and gets a peerId
-  socket.on('receiver-joined', (data) => {
-    const peerId = data.peerId;
-    Logger.success('Receiver joined!', peerId);
-    startPeerConnectionForReceiver(peerId);
+
+  socket.on('receiver-joined', ({ peerId }) => {
+    Logger.success('Receiver joined', peerId);
+    createSenderPeer(peerId);
   });
-  
-  // Receiver receives ready acknowledgment with peerId
-  socket.on('receiver-ready-ack', (data) => {
-    const peerId = data.peerId;
-    const startTime = data.startTime;
-    const elapsed = startTime ? Date.now() - startTime : 0;
-    Logger.log('Receiver ready ACK with peerId', { peerId, elapsed: `${elapsed}ms` });
+
+  socket.on('answer', async ({ answer, peerId }) => {
+    const pc = peerConnections.get(peerId);
+    if (!pc) return Logger.warn('No sender peer for answer', peerId);
+    try {
+      await pc.setRemoteDescription(new RTCSessionDescription(answer));
+      Logger.log('Answer set for', peerId);
+    } catch (e) { Logger.error('setRemoteDescription failed', e); }
+  });
+
+  // ── Receiver events ──
+
+  socket.on('receiver-ready-ack', ({ peerId }) => {
+    Logger.success('Receiver ACK, peerId:', peerId);
     myPeerId = peerId;
-    startPeerConnectionForReceiver(peerId);
+    createReceiverPeer(peerId);
   });
 
-  // WebRTC offer routed by peerId
-  socket.on('offer', async data => {
+  socket.on('offer', async ({ offer, peerId }) => {
+    // Receiver handles offers
+    if (!recvPc) return Logger.warn('No receiver peer for offer');
     try {
-      const peerId = data.peerId || (isSender ? null : myPeerId);
-      const pc = isSender ? peerConnections.get(peerId) : peerConnection;
-      
-      if (!pc) {
-        Logger.warn('No peer connection found for peerId', peerId);
-        return;
-      }
-      
-      const startTime = data.startTime;
-      const elapsed = startTime ? Date.now() - startTime : 0;
-      Logger.log('Received offer for peerId', { peerId, elapsed: `${elapsed}ms` });
-      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      socket.emit('answer', { code: generatedCodeRaw || document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, ''), answer, peerId, startTime });
-    } catch(e) { Logger.error('Offer handling failed:', e.message); }
+      await recvPc.setRemoteDescription(new RTCSessionDescription(offer));
+      const answer = await recvPc.createAnswer();
+      await recvPc.setLocalDescription(answer);
+      const code = document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, '').toUpperCase();
+      socket.emit('answer', { code, answer, peerId });
+      Logger.log('Answer sent for', peerId);
+    } catch (e) { Logger.error('Offer handling failed', e); }
   });
 
-  // WebRTC answer routed by peerId
-  socket.on('answer', async data => {
+  // ── Shared ICE ──
+
+  socket.on('ice-candidate', async ({ candidate, peerId }) => {
+    // Try sender map first, then receiver connection
+    const pc = peerConnections.get(peerId) || recvPc;
+    if (!pc || !candidate) return;
     try {
-      const peerId = data.peerId;
-      const pc = peerConnections.get(peerId);
-      if (!pc) {
-        Logger.warn('No peer connection found for answer peerId', peerId);
-        return;
-      }
-      const startTime = data.startTime;
-      const elapsed = startTime ? Date.now() - startTime : 0;
-      Logger.log('Received answer for peerId', { peerId, elapsed: `${elapsed}ms` });
-      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
-    }
-    catch(e) { Logger.error('Answer handling failed:', e.message); }
+      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+    } catch (e) { Logger.warn('addIceCandidate failed', e.message); }
   });
 
-  // ICE candidate routed by peerId
-  socket.on('ice-candidate', async data => {
-    try {
-      const peerId = data.peerId || (isSender ? null : myPeerId);
-      const pc = isSender ? peerConnections.get(peerId) : peerConnection;
-      if (!pc) return;
-      if(data.candidate) await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-    }
-    catch(e) { Logger.error('ICE candidate error:', e.message); }
-  });
+  // ── Misc ──
 
-  // Peer completed transfer
-  socket.on('peer-complete', (data) => {
-    const peerId = data.peerId;
-    Logger.success('Peer completed transfer', peerId);
+  socket.on('peer-complete', ({ peerId }) => {
+    Logger.success('Peer completed', peerId);
     const prog = peerProgress.get(peerId);
-    if (prog) {
-      prog.sent = prog.total; // Mark as complete
-      updateReceiverBadge();
-    }
+    if (prog) { prog.sent = prog.total; updateReceiverBadge(); }
   });
 
-  socket.on('peer-disconnected', (data) => {
-    const peerId = data.peerId;
+  socket.on('peer-disconnected', ({ peerId }) => {
     Logger.warn('Peer disconnected', peerId);
     if (isSender) {
       peerConnections.delete(peerId);
@@ -904,41 +656,26 @@ function initSocket() {
       peerProgress.delete(peerId);
       updateReceiverBadge();
     } else {
-      showToast('warning', 'Disconnected', 'The sender disconnected');
+      showToast('warning', 'Sender disconnected', 'The sender left the session.');
       resetConnectionCore();
       showScreen('screen-send');
     }
   });
-  
-  socket.on('code-expired', () => { showToast('warning', 'Code expired', 'This code is no longer valid'); resetConnectionCore(); showScreen('screen-send'); });
+
+  socket.on('code-expired', () => {
+    showToast('warning', 'Code expired', 'This code is no longer valid.');
+    resetConnectionCore();
+    showScreen('screen-send');
+  });
 }
 
-function resetConnectionCore() {
-  if (timerInterval) { clearInterval(timerInterval); timerInterval = null; }
-  if (dataChannel) { try { dataChannel.close(); } catch(e){} }
-  if (peerConnection) { try { peerConnection.close(); } catch(e){} }
-  peerConnection = null; dataChannel = null; peerConnectionPreCreated = false;
-  receivedFileChunks = []; receivedFileMetadata = null;
-  if (receivedBlobUrl) { URL.revokeObjectURL(receivedBlobUrl); receivedBlobUrl = null; }
-  transferState = { isTransferring: false, totalSize: 0, sentBytes: 0, receivedBytes: 0 };
+function setStatusDot(color) {
+  document.querySelectorAll('.status-dot').forEach(el => el.style.background = color);
 }
 
-function resetAll() {
-  resetConnectionCore();
-  removeFile();
-  document.getElementById('receive-code-input').value = '';
-  document.getElementById('connect-btn').disabled = true;
-  generatedCodeRaw = '';
-  showScreen('screen-send');
-  switchTab('send');
-}
-
-// UI Buttons actions
+// ===== UI HELPERS =====
 function copyCode() {
-  const code = generatedCodeRaw;
-  if (navigator.clipboard) {
-    navigator.clipboard.writeText(code).catch(() => {});
-  }
+  if (navigator.clipboard) navigator.clipboard.writeText(generatedCode).catch(() => {});
   const btn = document.getElementById('copy-btn');
   btn.classList.add('copied');
   btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg> Copied!`;
@@ -950,47 +687,78 @@ function copyCode() {
 }
 
 function shareCode() {
-  showToast('success', 'Share Code', `Use code: ${generatedCodeRaw}`);
-}
-
-function initTheme() {
-  const saved = localStorage.getItem('droply-theme') || 'light';
-  applyTheme(saved);
-}
-
-function applyTheme(theme) {
-  document.documentElement.setAttribute('data-theme', theme);
-  localStorage.setItem('droply-theme', theme);
-  // Update the settings label
-  const themeLabel = document.querySelector('#theme-toggle-item .settings-item-value');
-  if (themeLabel) {
-    themeLabel.innerHTML = `${theme === 'dark' ? 'Dark' : 'Light'} <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>`;
-  }
-}
-
-function toggleTheme() {
-  const current = document.documentElement.getAttribute('data-theme') || 'light';
-  const next = current === 'dark' ? 'light' : 'dark';
-  applyTheme(next);
-  showToast('success', 'Theme Changed', `Switched to ${next} mode`);
-}
-
-function clearHistory() {
-  showToast('success', 'History Cleared', 'Transfer history has been cleared.');
+  showToast('info', 'Share code', `Use code: ${generatedCode}`);
 }
 
 function showToast(type, title, msg) {
   const container = document.getElementById('toast-container');
-  if(!container) return;
+  if (!container) return;
   const icons = { success: '✅', warning: '⚠️', error: '📡', info: '💡' };
   const toast = document.createElement('div');
   toast.className = `toast ${type}`;
   toast.innerHTML = `<span class="toast-icon">${icons[type] || '📢'}</span><div class="toast-content"><div class="toast-title">${title}</div><div class="toast-msg">${msg}</div></div>`;
   container.appendChild(toast);
   setTimeout(() => {
-    toast.style.animation = 'none';
-    toast.style.opacity = '0';
+    toast.style.opacity    = '0';
     toast.style.transition = 'opacity 0.3s';
     setTimeout(() => toast.remove(), 300);
   }, 3000);
+}
+
+function initTheme() {
+  applyTheme(localStorage.getItem('droply-theme') || 'light');
+}
+
+function applyTheme(theme) {
+  document.documentElement.setAttribute('data-theme', theme);
+  localStorage.setItem('droply-theme', theme);
+  const label = document.querySelector('#theme-toggle-item .settings-item-value');
+  if (label) label.textContent = theme === 'dark' ? 'Dark' : 'Light';
+}
+
+function toggleTheme() {
+  const next = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+  applyTheme(next);
+  showToast('success', 'Theme changed', `Switched to ${next} mode.`);
+}
+
+function clearHistory() {
+  showToast('success', 'History cleared', 'Transfer history has been cleared.');
+}
+
+// ===== QR MONKEY OVERLAY (unchanged logic, cleaned up) =====
+function overlayMonkeyOnQR(container) {
+  const canvas = container.querySelector('canvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+  const cx  = canvas.width / 2;
+  const cy  = canvas.height / 2;
+  const r   = 28;
+
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+
+  const svg = `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+    <circle cx="22" cy="58" r="14" fill="#C8874B"/>
+    <circle cx="98" cy="58" r="14" fill="#C8874B"/>
+    <circle cx="22" cy="58" r="9" fill="#E8A570"/>
+    <circle cx="98" cy="58" r="9" fill="#E8A570"/>
+    <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B"/>
+    <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570"/>
+    <circle cx="60" cy="52" r="32" fill="#C8874B"/>
+    <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570"/>
+    <circle cx="50" cy="48" r="6" fill="white"/><circle cx="70" cy="48" r="6" fill="white"/>
+    <circle cx="51" cy="49" r="3.5" fill="#2D2D2D"/><circle cx="71" cy="49" r="3.5" fill="#2D2D2D"/>
+    <circle cx="52" cy="48" r="1.2" fill="white"/><circle cx="72" cy="48" r="1.2" fill="white"/>
+    <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A"/>
+    <circle cx="57.5" cy="57.5" r="1.5" fill="#8B4513"/>
+    <circle cx="62.5" cy="57.5" r="1.5" fill="#8B4513"/>
+    <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+  </svg>`;
+
+  const img = new Image();
+  img.onload = () => ctx.drawImage(img, cx - 20, cy - 20, 40, 40);
+  img.src = 'data:image/svg+xml;base64,' + btoa(svg);
 }
