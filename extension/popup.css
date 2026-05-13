@@ -649,6 +649,144 @@ body {
   border-color: var(--green);
 }
 
+/* ===== QR CARD ===== */
+.qr-card {
+  background: var(--white);
+  border-radius: var(--radius);
+  padding: 20px;
+  text-align: center;
+  border: 1.5px solid var(--border);
+  box-shadow: var(--shadow);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 4px;
+}
+
+.qr-card-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text-light);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.qr-canvas-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 160px;
+  height: 160px;
+  background: var(--bg);
+  border-radius: var(--radius-sm);
+  border: 2px solid var(--border);
+  padding: 0px;
+  box-sizing: border-box;
+}
+
+.qr-canvas-container canvas {
+  width: 160px !important;
+  height: 160px !important;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+.qr-canvas-container img {
+  width: 160px !important;
+  height: 160px !important;
+  max-width: 100%;
+  max-height: 100%;
+  display: block;
+}
+
+.qr-card-caption {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--text-light);
+}
+
+/* ===== RECEIVER COUNT BADGE ===== */
+.receiver-count-badge {
+  display: inline-block;
+  background: var(--green);
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 6px 12px;
+  border-radius: 50px;
+  margin-top: 4px;
+  animation: fadeIn 0.25s ease;
+}
+
+/* ===== COMPACT CODE BOX ===== */
+.code-box-compact {
+  padding: 14px 16px;
+  gap: 10px;
+}
+
+.code-box-compact .code-label {
+  margin-bottom: 8px;
+}
+
+.code-box-compact .droply-code {
+  font-size: 28px;
+  letter-spacing: 4px;
+  margin-bottom: 6px;
+}
+
+.code-box-compact .code-timer {
+  margin-bottom: 10px;
+}
+
+.code-box-compact .code-actions {
+  gap: 8px;
+}
+
+.code-box-compact .code-action-btn {
+  font-size: 12px;
+  padding: 8px;
+  gap: 4px;
+}
+
+/* ===== RECEIVER LIST ===== */
+.receiver-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.receiver-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: var(--white);
+  border: 1.5px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  font-size: 12px;
+}
+
+.receiver-item-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-dark);
+  font-weight: 600;
+}
+
+.receiver-progress {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--green);
+}
+
+.receiver-item-left span:first-child {
+  font-size: 16px;
+}
+
 /* ===== RECEIVE SECTION ===== */
 .receive-illus {
   background: linear-gradient(180deg, #EDE9FF 0%, #D8D0FF 100%);

@@ -217,46 +217,18 @@
     </div>
 
     <div class="content">
-      <!-- Scene -->
-      <div class="illus-area">
-        <svg style="position:absolute;bottom:0;left:0;width:100%;height:100%;" viewBox="0 0 320 110"
-          preserveAspectRatio="none">
-          <ellipse cx="80" cy="115" rx="90" ry="55" fill="#C4B5FD" opacity="0.5" />
-          <ellipse cx="260" cy="115" rx="80" ry="50" fill="#A78BFA" opacity="0.4" />
-          <rect x="30" y="60" width="8" height="35" fill="#8B5E3C" />
-          <circle cx="34" cy="52" r="20" fill="#34D399" />
-          <rect x="265" y="55" width="8" height="40" fill="#8B5E3C" />
-          <circle cx="269" cy="46" r="22" fill="#34D399" />
-          <!-- Dashed arc -->
-          <path d="M55 65 Q160 15 255 65" stroke="#6C5CE7" stroke-width="2" stroke-dasharray="6 4" fill="none"
-            opacity="0.6" />
-          <!-- Arrows -->
-          <path d="M90 52 L100 48 L94 55" stroke="#6C5CE7" stroke-width="1.5" fill="none" stroke-linecap="round" />
-          <path d="M220 52 L230 48 L224 55" stroke="#6C5CE7" stroke-width="1.5" fill="none" stroke-linecap="round" />
-        </svg>
-        <svg style="position:absolute;bottom:8px;left:50%;transform:translateX(-50%);width:60px;z-index:2;"
-          viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-          <circle cx="22" cy="58" r="14" fill="#C8874B" />
-          <circle cx="98" cy="58" r="14" fill="#C8874B" />
-          <circle cx="22" cy="58" r="9" fill="#E8A570" />
-          <circle cx="98" cy="58" r="9" fill="#E8A570" />
-          <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
-          <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
-          <circle cx="60" cy="52" r="32" fill="#C8874B" />
-          <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
-          <circle cx="50" cy="48" r="6" fill="white" />
-          <circle cx="70" cy="48" r="6" fill="white" />
-          <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
-          <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
-          <circle cx="52" cy="48" r="1.2" fill="white" />
-          <circle cx="72" cy="48" r="1.2" fill="white" />
-          <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
-          <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round" />
-        </svg>
+      <!-- QR Card - Primary Focal Point -->
+      <div class="qr-card">
+        <div class="qr-card-label">Share this QR code</div>
+        <div id="qr-canvas" class="qr-canvas-container"></div>
+        <div class="qr-card-caption">Scan to receive the file</div>
+        <div id="receiver-count-badge" class="receiver-count-badge" style="display: none;">
+          0 receivers connected
+        </div>
       </div>
 
-      <!-- Code box -->
-      <div class="code-box">
+      <!-- Compact Code Box -->
+      <div class="code-box code-box-compact">
         <div class="code-label">Your Droply Code</div>
         <div class="droply-code" id="display-code">7K3 • PL9</div>
         <div class="code-timer">
@@ -301,6 +273,9 @@
           <polyline points="22 4 12 14.01 9 11.01" />
         </svg>
       </div>
+
+      <!-- Receiver List -->
+      <div id="receiver-list-container" class="receiver-list"></div>
 
       <div class="secure-note">
         <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
@@ -588,6 +563,7 @@
   <div class="toast-container" id="toast-container"></div>
 
   <script src="socket.io.min.js"></script>
+  <script src="qrcode.min.js"></script>
   <script src="popup.js"></script>
 </body>
 

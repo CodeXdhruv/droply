@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Droply - Mobile File Receiver</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      min-height: 100vh;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      padding: 20px;
+    }
+
+    .container {
+      background: white;
+      border-radius: 16px;
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+      padding: 40px;
+      max-width: 500px;
+      width: 100%;
+      text-align: center;
+    }
+
+    .header {
+      margin-bottom: 30px;
+    }
+
+    .header h1 {
+      font-size: 36px;
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      margin-bottom: 10px;
+    }
+
+    .subtitle {
+      color: #666;
+      font-size: 14px;
+    }
+
+    .content {
+      margin: 30px 0;
+    }
+
+    .code-display {
+      background: #f5f7fa;
+      padding: 20px;
+      border-radius: 12px;
+      margin: 20px 0;
+      border-left: 4px solid #667eea;
+    }
+
+    .code-label {
+      color: #999;
+      font-size: 12px;
+      margin-bottom: 8px;
+      text-transform: uppercase;
+      font-weight: 600;
+    }
+
+    .code-text {
+      font-size: 28px;
+      font-weight: 700;
+      color: #333;
+      font-family: 'Courier New', monospace;
+      letter-spacing: 4px;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      color: white;
+      border: none;
+      padding: 14px 32px;
+      border-radius: 8px;
+      font-size: 16px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: transform 0.2s, box-shadow 0.2s;
+      margin: 10px 0;
+      width: 100%;
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+    }
+
+    .btn-primary:active {
+      transform: translateY(0);
+    }
+
+    .btn-secondary {
+      background: white;
+      color: #667eea;
+      border: 2px solid #667eea;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+      margin: 10px 0;
+    }
+
+    .btn-secondary:hover {
+      background: #f5f7fa;
+    }
+
+    .status {
+      padding: 20px;
+      border-radius: 8px;
+      margin: 20px 0;
+      font-size: 14px;
+      display: none;
+    }
+
+    .status.info {
+      background: #e3f2fd;
+      color: #1976d2;
+      display: block;
+    }
+
+    .status.error {
+      background: #ffebee;
+      color: #c62828;
+      display: block;
+    }
+
+    .status.success {
+      background: #e8f5e9;
+      color: #2e7d32;
+      display: block;
+    }
+
+    .loading {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: currentColor;
+      animation: pulse 1.5s infinite;
+      margin-right: 8px;
+    }
+
+    @keyframes pulse {
+      0%, 100% {
+        opacity: 0.3;
+        transform: scale(0.8);
+      }
+      50% {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    .icon {
+      font-size: 48px;
+      margin-bottom: 20px;
+    }
+
+    .extension-prompt {
+      background: #fff3cd;
+      border-left: 4px solid #ffc107;
+      padding: 15px;
+      border-radius: 8px;
+      margin: 20px 0;
+      text-align: left;
+      font-size: 12px;
+      color: #856404;
+    }
+
+    .info-text {
+      color: #999;
+      font-size: 12px;
+      margin-top: 15px;
+      line-height: 1.6;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="icon">📁</div>
+      <h1>Droply</h1>
+      <p class="subtitle">Instant File Sharing</p>
+    </div>
+
+    <div class="content">
+      <div class="status info" id="infoStatus">
+        <span class="loading"></span><span id="infoText">Processing your request...</span>
+      </div>
+
+      <div class="status error" id="errorStatus">
+        <span id="errorText">Error loading</span>
+      </div>
+
+      <div class="status success" id="successStatus">
+        <span id="successText">Ready to receive!</span>
+      </div>
+
+      <div id="codeSection" style="display: none;">
+        <p style="color: #666; margin-bottom: 15px;">The sender has shared a file with you.</p>
+        
+        <div class="code-display">
+          <div class="code-label">Share Code</div>
+          <div class="code-text" id="shareCode">ABC123</div>
+        </div>
+
+        <p class="info-text">📱 Use this code in the Droply extension to receive the file.</p>
+      </div>
+
+      <div id="extensionSection" style="display: none;">
+        <p style="color: #666; margin-bottom: 15px; margin-top: 20px;">You need the Droply extension to receive files.</p>
+        
+        <div class="extension-prompt">
+          <strong>✓ Install Droply Extension:</strong>
+          <ol style="margin-top: 8px; margin-left: 20px;">
+            <li>Go to Chrome Web Store (search "Droply")</li>
+            <li>Click "Add to Chrome"</li>
+            <li>Return here and refresh</li>
+          </ol>
+        </div>
+
+        <button class="btn-primary" onclick="checkExtension()">
+          🔄 Check for Extension
+        </button>
+        
+        <button class="btn-secondary" onclick="copyCode()">
+          📋 Copy Code
+        </button>
+      </div>
+    </div>
+
+    <div class="info-text" style="margin-top: 30px;">
+      💡 <strong>Tip:</strong> Keep this page open and switch to the Droply extension to complete the transfer.
+    </div>
+  </div>
+
+  <script>
+    // Get code from URL
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get('code');
+
+    // Check for extension
+    function checkExtension() {
+      // Try to send message to extension
+      chrome.runtime.sendMessage(
+        chrome.runtime.id,
+        { message: 'check' },
+        (response) => {
+          if (chrome.runtime.lastError) {
+            showError('Extension not installed yet. Please install Droply from Chrome Web Store.');
+            return;
+          }
+          showSuccess('Extension detected! Auto-filling code...');
+          // Extension will receive the code
+          chrome.runtime.sendMessage(
+            chrome.runtime.id,
+            { message: 'auto-fill-code', code: code }
+          );
+        }
+      );
+    }
+
+    function copyCode() {
+      navigator.clipboard.writeText(code);
+      const btn = event.target;
+      const originalText = btn.textContent;
+      btn.textContent = '✓ Copied!';
+      setTimeout(() => {
+        btn.textContent = originalText;
+      }, 2000);
+    }
+
+    function showError(message) {
+      document.getElementById('infoStatus').style.display = 'none';
+      document.getElementById('successStatus').style.display = 'none';
+      document.getElementById('errorStatus').style.display = 'block';
+      document.getElementById('errorText').textContent = message;
+    }
+
+    function showSuccess(message) {
+      document.getElementById('infoStatus').style.display = 'none';
+      document.getElementById('errorStatus').style.display = 'none';
+      document.getElementById('successStatus').style.display = 'block';
+      document.getElementById('successText').textContent = message;
+    }
+
+    function showInfo(message) {
+      document.getElementById('successStatus').style.display = 'none';
+      document.getElementById('errorStatus').style.display = 'none';
+      document.getElementById('infoStatus').style.display = 'block';
+      document.getElementById('infoText').textContent = message;
+    }
+
+    // Initialize
+    window.addEventListener('load', () => {
+      if (!code || code.length !== 6) {
+        showError('Invalid or missing share code.');
+        return;
+      }
+
+      // Display the code
+      document.getElementById('shareCode').textContent = code;
+      document.getElementById('codeSection').style.display = 'block';
+
+      // Check for extension
+      try {
+        chrome.runtime.sendMessage(
+          { message: 'droply-check' },
+          (response) => {
+            if (chrome.runtime.lastError) {
+              // Extension not available
+              document.getElementById('extensionSection').style.display = 'block';
+              showInfo('Opening extension...');
+            } else {
+              // Extension is available
+              showSuccess('Droply extension detected! Opening...');
+              // Try to auto-fill and open extension
+              chrome.runtime.sendMessage({
+                message: 'auto-receive',
+                code: code
+              });
+            }
+          }
+        );
+      } catch (error) {
+        // Extension communication failed
+        document.getElementById('extensionSection').style.display = 'block';
+        showInfo('Ready to share code');
+      }
+
+      // Auto-check every 2 seconds if extension becomes available
+      setInterval(() => {
+        checkExtension();
+      }, 2000);
+    });
+
+    // Handle extension messages
+    if (chrome && chrome.runtime) {
+      chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+        if (request.message === 'extension-ready') {
+          document.getElementById('extensionSection').style.display = 'none';
+          showSuccess('Connected to extension! Preparing transfer...');
+        }
+        sendResponse({ status: 'received' });
+      });
+    }
+  </script>
+</body>
+</html>

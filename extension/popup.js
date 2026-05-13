@@ -11,18 +11,29 @@ const Logger = {
 const SERVER_URL = 'https://droply-bxti.onrender.com';
 const RTC_CONFIG = {
   iceServers: [
+    // STUN servers (fast, for direct connections)
     { urls: ['stun:stun.l.google.com:19302'] },
     { urls: ['stun:stun1.l.google.com:19302'] },
     { urls: ['stun:stun2.l.google.com:19302'] },
-    { urls: ['stun:stun3.l.google.com:19302'] },
-    { urls: ['stun:stun4.l.google.com:19302'] }
+    
+    // TURN servers (fallback for firewall-restricted networks)
+    {
+      urls: ['turn:openrelay.metered.ca:80'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: ['turn:openrelay.metered.ca:443'],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
   ],
-  iceCandidatePoolSize: 15
+  iceCandidatePoolSize: 5  // Reduced from 15 for faster gathering
 };
 const RTC_OFFER_OPTIONS = { offerToReceiveAudio: false, offerToReceiveVideo: false, voiceActivityDetection: false, iceRestart: false };
 const CHUNK_SIZE = 65536;
 const MAX_FILE_SIZE = 100 * 1024 * 1024;
-const EXPIRY_TIME = 300;
+const EXPIRY_TIME = 120;
 const CONNECTION_TIMEOUT = 30000;
 
 const SUPPORTED_FILE_TYPES = {
@@ -43,8 +54,15 @@ function validateFile(file) {
 }
 
 // ===== GLOBAL STATE =====
-let socket = null, peerConnection = null, dataChannel = null, selectedFile = null;
-let isSender = false, peerConnectionPreCreated = false;
+let socket = null, selectedFile = null;
+let isSender = false;
+const peerConnections = new Map();
+const dataChannels = new Map();
+const peerProgress = new Map();
+let preWarmConnection = null;
+let chunkCache = [];
+let fileBuffered = false;
+let myPeerId = null; // for receiver
 let timerInterval = null;
 let transferStartTime = 0, lastBytesUpdate = 0, lastTimeUpdate = 0;
 let transferState = { isTransferring: false, totalSize: 0, sentBytes: 0, receivedBytes: 0 };
@@ -59,6 +77,14 @@ let prevScreen = 'screen-send';
 // ===== INIT =====
 document.addEventListener('DOMContentLoaded', () => {
   Logger.log('Droply initialized');
+  
+  // Check if QRCode library is loaded
+  if (typeof QRCode === 'undefined') {
+    Logger.error('QRCode library not loaded! Check qrcode.min.js');
+  } else {
+    Logger.success('QRCode library loaded successfully');
+  }
+  
   initSocket();
   wireEventListeners();
   initTheme();
@@ -178,10 +204,23 @@ function handleFile(file) {
   document.getElementById('chip-name').textContent = file.name;
   document.getElementById('chip-size').textContent = formatBytes(file.size);
   document.getElementById('generate-btn').disabled = false;
+  bufferFileIntoRAM(file);
+}
+
+async function bufferFileIntoRAM(file) {
+  chunkCache = [];
+  fileBuffered = false;
+  const buffer = await file.arrayBuffer();
+  for (let i = 0; i < buffer.byteLength; i += CHUNK_SIZE) {
+    chunkCache.push(buffer.slice(i, i + CHUNK_SIZE));
+  }
+  fileBuffered = true;
 }
 
 function removeFile() {
   selectedFile = null;
+  chunkCache = [];
+  fileBuffered = false;
   document.getElementById('file-chip').classList.remove('visible');
   document.getElementById('generate-btn').disabled = true;
   // Restore the drop zone
@@ -196,6 +235,126 @@ function formatBytes(bytes) {
   return (bytes/(1024*1024)).toFixed(1) + ' MB';
 }
 
+function overlayMonkeyOnQR(container) {
+  // Wait for QR canvas or image to be rendered before overlaying
+  setTimeout(() => {
+    let canvas = container.querySelector('canvas');
+    let img = container.querySelector('img');
+    
+    if (!canvas && !img) {
+      Logger.warn('QR canvas or img not found for monkey overlay');
+      return;
+    }
+    
+    try {
+      // If there's an image, convert it to canvas for manipulation
+      if (img && !canvas) {
+        const tempCanvas = document.createElement('canvas');
+        tempCanvas.width = 160;
+        tempCanvas.height = 160;
+        const ctx = tempCanvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, 160, 160);
+        canvas = tempCanvas;
+      }
+      
+      if (!canvas) return;
+      
+      const ctx = canvas.getContext('2d');
+      const centerX = canvas.width / 2;
+      const centerY = canvas.height / 2;
+      const circleRadius = 28; // Circle around monkey
+      
+      // Draw white background circle
+      ctx.beginPath();
+      ctx.arc(centerX, centerY, circleRadius, 0, 2 * Math.PI);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      
+      // Draw subtle shadow
+      ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+      ctx.lineWidth = 0.5;
+      ctx.stroke();
+      
+      // Draw monkey SVG as image
+      const svgData = `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="22" cy="58" r="14" fill="#C8874B" />
+        <circle cx="98" cy="58" r="14" fill="#C8874B" />
+        <circle cx="22" cy="58" r="9" fill="#E8A570" />
+        <circle cx="98" cy="58" r="9" fill="#E8A570" />
+        <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B" />
+        <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570" />
+        <circle cx="60" cy="52" r="32" fill="#C8874B" />
+        <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570" />
+        <circle cx="50" cy="48" r="6" fill="white" />
+        <circle cx="70" cy="48" r="6" fill="white" />
+        <circle cx="51" cy="49" r="3.5" fill="#2D2D2D" />
+        <circle cx="71" cy="49" r="3.5" fill="#2D2D2D" />
+        <circle cx="52" cy="48" r="1.2" fill="white" />
+        <circle cx="72" cy="48" r="1.2" fill="white" />
+        <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A" />
+        <circle cx="57.5" cy="57.5" r="1.5" fill="#8B4513" />
+        <circle cx="62.5" cy="57.5" r="1.5" fill="#8B4513" />
+        <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round" />
+      </svg>`;
+      
+      const monkeyImg = new Image();
+      monkeyImg.onload = () => {
+        // Draw monkey image centered in the white circle (scaled to 40x40)
+        const monkeySize = 40;
+        ctx.drawImage(monkeyImg, centerX - monkeySize / 2, centerY - monkeySize / 2, monkeySize, monkeySize);
+        Logger.success('Monkey overlay rendered on QR code');
+        
+        // If we created a temp canvas, update the container with it
+        if (img && canvas !== container.querySelector('canvas')) {
+          container.innerHTML = '';
+          container.appendChild(canvas);
+        }
+      };
+      monkeyImg.onerror = () => {
+        Logger.error('Failed to load monkey SVG for overlay');
+      };
+      monkeyImg.src = 'data:image/svg+xml;base64,' + btoa(svgData);
+    } catch (err) {
+      Logger.error('Error overlaying monkey on QR', err);
+    }
+  }, 250);
+}
+
+function updateReceiverBadge() {
+  const badge = document.getElementById('receiver-count-badge');
+  const container = document.getElementById('receiver-list-container');
+  if (!badge || !container) return;
+  
+  const count = peerConnections.size;
+  if (count === 0) {
+    badge.style.display = 'none';
+    container.innerHTML = '';
+    return;
+  }
+  
+  badge.style.display = 'block';
+  badge.textContent = `${count} receiver${count > 1 ? 's' : ''} connected`;
+  
+  container.innerHTML = '';
+  peerConnections.forEach((pc, peerId) => {
+    const prog = peerProgress.get(peerId);
+    const progressText = prog && prog.total > 0 ? Math.floor((prog.sent / prog.total) * 100) + '%' : 'Connecting...';
+    const isDone = prog && prog.sent > 0 && prog.sent >= prog.total;
+    
+    container.innerHTML += `
+      <div class="receiver-item">
+        <div class="receiver-item-left">
+          <span>📱</span>
+          <span>Receiver ${peerId.substring(0,4)}</span>
+        </div>
+        <div class="receiver-progress">
+          ${isDone ? '✅ Complete' : progressText}
+        </div>
+      </div>
+    `;
+  });
+}
+
 // ===== GENERATE CODE =====
 function generateCode() {
   if (!selectedFile) return;
@@ -207,23 +366,72 @@ function generateCode() {
   for (let i = 0; i < 3; i++) part2 += chars[Math.floor(Math.random() * chars.length)];
   generatedCodeRaw = part1 + part2;
 
+  Logger.success('Generated code', generatedCodeRaw);
+  
   document.getElementById('display-code').textContent = part1 + ' • ' + part2;
   document.getElementById('code-chip-name').textContent = selectedFile.name;
   document.getElementById('code-chip-size').textContent = formatBytes(selectedFile.size);
 
-  showScreen('screen-code');
+  // Generate QR code with receiver URL
+  const receiverUrl = `${SERVER_URL}/receive?code=${generatedCodeRaw}`;
+  Logger.debug('QR receiver URL', receiverUrl);
   
-  // Connect to signaling server
+  const qrContainer = document.getElementById('qr-canvas');
+  if (qrContainer) {
+    // Completely clear the container
+    qrContainer.innerHTML = '';
+    
+    try {
+      // Create a new instance with proper options
+      const qrOptions = {
+        text: receiverUrl,
+        width: 160,
+        height: 160,
+        colorDark: '#6C5CE7',
+        colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M,
+        useSVG: false
+      };
+      
+      // Generate QR code
+      new QRCode(qrContainer, qrOptions);
+      Logger.success('QR code generated successfully');
+      
+      // Wait for the QR code canvas to be fully rendered
+      setTimeout(() => {
+        const canvas = qrContainer.querySelector('canvas');
+        if (canvas) {
+          Logger.debug('QR canvas found, overlaying monkey...');
+          overlayMonkeyOnQR(qrContainer);
+        } else {
+          Logger.warn('QR canvas not found after generation');
+        }
+      }, 300);
+    } catch (err) {
+      Logger.error('QR generation failed', err);
+      qrContainer.innerHTML = '<p style="color: red; font-size: 12px;">QR Error</p>';
+    }
+  } else {
+    Logger.error('QR container not found');
+  }
+
+  showScreen('screen-code');
+  updateReceiverBadge();
+  
+  // Connect to signaling server as sender
   isSender = true;
   
-  // Pre-create peer connection
-  if (!peerConnection && !peerConnectionPreCreated) {
-    peerConnection = new RTCPeerConnection(RTC_CONFIG);
-    peerConnectionPreCreated = true;
-    setupPeerConnectionListeners();
+  // Pre-warm STUN connection (gather ICE candidates early)
+  if (!preWarmConnection) {
+    Logger.log('Pre-warming STUN connection...');
+    preWarmConnection = new RTCPeerConnection(RTC_CONFIG);
+    preWarmConnection.createDataChannel('warmup');
+    // This triggers ICE gathering without needing full connection
   }
   
+  // Notify server that sender is ready
   socket.emit('sender-ready', { code: generatedCodeRaw });
+  Logger.log('Sent sender-ready event', { code: generatedCodeRaw });
   
   startTimer();
 }
@@ -264,110 +472,228 @@ function startReceive() {
   if (code.length < 6) return;
   
   isSender = false;
+  const startTime = Date.now();
+  Logger.success('Receiver starting connection', { code, timestamp: startTime });
   showScreen('screen-connecting');
   
-  if (!peerConnection) {
-    peerConnection = new RTCPeerConnection(RTC_CONFIG);
-    setupPeerConnectionListeners();
-    peerConnection.ondatachannel = e => { dataChannel = e.channel; setupDataChannel(); };
-  }
-  
-  socket.emit('receiver-ready', { code });
-  
-  setTimeout(() => {
-    if (peerConnection?.connectionState !== 'connected') {
-      showToast('error', 'Timeout', 'Could not connect. Check the code and try again.');
-      resetAll();
-      showScreen('screen-send');
-      switchTab('receive');
-    }
-  }, CONNECTION_TIMEOUT);
+  socket.emit('receiver-ready', { code, startTime });
 }
 
 // ===== CORE TRANSFER LOGIC =====
 
-function setupPeerConnectionListeners() {
-  peerConnection.onconnectionstatechange = () => {
-    const state = peerConnection.connectionState;
-    Logger.log('Connection state:', state);
+// Multi-receiver peer connection setup
+function startPeerConnectionForReceiver(peerId) {
+  Logger.log('Starting peer connection for receiver', peerId);
+  
+  if (peerConnections.has(peerId)) {
+    Logger.warn('Peer connection already exists for', peerId);
+    return;
+  }
+  
+  const pc = new RTCPeerConnection(RTC_CONFIG);
+  peerConnections.set(peerId, pc);
+  peerProgress.set(peerId, { sent: 0, total: 0 });
+  
+  // Add connection timeout (15 seconds) with user feedback
+  const connectionTimer = setTimeout(() => {
+    const state = pc.connectionState;
+    if (state !== 'connected') {
+      Logger.error('Connection timeout after 15 seconds for peerId', peerId);
+      showToast('error', 'Connection Timeout', 'Taking longer than expected. Retrying...');
+      
+      // Auto-retry: emit receiver-ready again
+      setTimeout(() => {
+        Logger.log('Auto-retrying connection for peerId', peerId);
+        const code = document.getElementById('receive-code-input')?.value?.replace(/[^A-Z0-9]/gi, '');
+        if (code && code.length >= 6) {
+          socket.emit('receiver-ready', { code, startTime: Date.now() });
+        }
+      }, 2000);
+    }
+  }, 15000);
+  
+  setupPeerConnectionListeners(peerId, pc);
+  
+  if (isSender) {
+    // Sender creates offer
+    try {
+      const dc = pc.createDataChannel('file-transfer', { ordered: true, maxRetransmits: 3 });
+      dataChannels.set(peerId, dc);
+      setupDataChannelForReceiver(peerId, dc);
+      
+      pc.createOffer(RTC_OFFER_OPTIONS).then(offer => {
+        pc.setLocalDescription(offer);
+        socket.emit('offer', { code: generatedCodeRaw, offer, peerId });
+        Logger.log('Offer sent for peerId', peerId);
+      }).catch(e => Logger.error('Offer creation failed:', e));
+    } catch (e) {
+      Logger.error('Data channel creation failed:', e.message);
+    }
+  } else {
+    // Receiver waits for data channel
+    pc.ondatachannel = (event) => {
+      const dc = event.channel;
+      dataChannels.set(peerId, dc);
+      setupDataChannelForReceiver(peerId, dc);
+    };
+  }
+  
+  // Clear timeout on successful connection
+  pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'connected') {
+      clearTimeout(connectionTimer);
+      Logger.success('Connection established! Timeout cleared.', peerId);
+    }
+  };
+}
+
+// Track peer connection state for a specific receiver
+function setupPeerConnectionListeners(peerId, pc) {
+  pc.onconnectionstatechange = () => {
+    const state = pc.connectionState;
+    Logger.log('Connection state for peerId', peerId, state);
+    
     if (state === 'connected') {
-      if (!isSender) showScreen('screen-transfer'); // receiver goes to transfer when connected
+      if (!isSender) showScreen('screen-transfer');
     } else if (state === 'failed' || state === 'disconnected' || state === 'closed') {
-      if (state === 'failed' || state === 'disconnected') showToast('error', 'Connection lost', 'The other device disconnected.');
-      resetConnectionCore();
+      if (isSender) {
+        peerConnections.delete(peerId);
+        dataChannels.delete(peerId);
+        peerProgress.delete(peerId);
+        updateReceiverBadge();
+      } else {
+        resetConnectionCore();
+        showScreen('screen-send');
+      }
     }
   };
   
-  peerConnection.onicecandidate = e => {
+  pc.onicecandidate = (e) => {
     if (e.candidate) {
       const code = isSender ? generatedCodeRaw : document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, '');
-      socket.emit('ice-candidate', { code, candidate: e.candidate });
+      socket.emit('ice-candidate', { code, candidate: e.candidate, peerId });
     }
+  };
+  
+  pc.onicecandidateerror = (e) => {
+    Logger.warn('ICE error for peerId', peerId, e.errorCode);
   };
 }
 
-async function startPeerConnection() {
-  try {
-    dataChannel = peerConnection.createDataChannel('file-transfer', { ordered: true, maxRetransmits: 3 });
-    setupDataChannel();
-    const offer = await peerConnection.createOffer(RTC_OFFER_OPTIONS);
-    await peerConnection.setLocalDescription(offer);
-    const code = generatedCodeRaw;
-    socket.emit('offer', { code, offer });
-  } catch(e) { Logger.error('Peer connection failed:', e.message); }
-}
-
-function setupDataChannel() {
-  if (!dataChannel) return;
-  dataChannel.binaryType = 'arraybuffer';
-  dataChannel.onopen = () => {
-    Logger.success('Data channel open');
+function setupDataChannelForReceiver(peerId, dc) {
+  dc.binaryType = 'arraybuffer';
+  
+  dc.onopen = () => {
+    Logger.success('Data channel open for peerId', peerId);
     if (isSender && selectedFile) {
+      // Initialize progress tracking
+      const prog = peerProgress.get(peerId) || { sent: 0, total: selectedFile.size };
+      peerProgress.set(peerId, prog);
+      updateReceiverBadge();
+      
       showScreen('screen-transfer');
-      document.getElementById('transfer-filename').textContent = selectedFile.name;
+      if (!document.getElementById('transfer-filename').textContent) {
+        document.getElementById('transfer-filename').textContent = selectedFile.name;
+      }
       transferStartTime = Date.now();
-      sendFileMetadata();
-      setTimeout(() => sendFileChunks(), 100);
+      
+      // Send metadata and start transfer for this receiver
+      sendFileMetadataToReceiver(peerId, dc);
+      setTimeout(() => sendFileChunksToReceiver(peerId, dc), 100);
     }
   };
-  dataChannel.onclose = () => Logger.warn('Data channel closed');
-  dataChannel.onerror = e => Logger.error('Data channel error:', e);
-  dataChannel.onmessage = e => {
-    handleDataMessage(e.data);
+  
+  dc.onclose = () => {
+    Logger.warn('Data channel closed for peerId', peerId);
+  };
+  
+  dc.onerror = (e) => {
+    Logger.error('Data channel error for peerId', peerId, e);
+  };
+  
+  dc.onmessage = (e) => {
+    if (!isSender) {
+      handleDataMessage(e.data);
+    }
   };
 }
 
-function sendFileMetadata() {
-  const meta = { type: 'METADATA', name: selectedFile.name, size: selectedFile.size, mimeType: selectedFile.type };
-  dataChannel.send(JSON.stringify(meta));
+// Send file metadata to a specific receiver
+function sendFileMetadataToReceiver(peerId, dc) {
+  const meta = {
+    type: 'METADATA',
+    name: selectedFile.name,
+    size: selectedFile.size,
+    mimeType: selectedFile.type
+  };
+  dc.send(JSON.stringify(meta));
+  Logger.log('Metadata sent to peerId', peerId);
 }
 
-function sendFileChunks() {
-  transferState = { isTransferring: true, totalSize: selectedFile.size, sentBytes: 0, receivedBytes: 0 };
-  lastBytesUpdate = 0; lastTimeUpdate = Date.now();
-  const reader = new FileReader();
+// Send file chunks with adaptive chunk sizing per receiver
+function sendFileChunksToReceiver(peerId, dc) {
+  const prog = peerProgress.get(peerId);
+  if (!prog) return;
+  
+  prog.total = selectedFile.size;
   let offset = 0;
-
-  const readNext = () => {
+  
+  const sendChunk = () => {
     if (offset >= selectedFile.size) {
-      dataChannel.send(JSON.stringify({ type: 'END' }));
-      transferState.isTransferring = false;
-      showComplete(selectedFile.name, selectedFile.size);
+      dc.send(JSON.stringify({ type: 'END' }));
+      prog.sent = prog.total;
+      updateReceiverBadge();
+      socket.emit('peer-complete', { code: generatedCodeRaw, peerId });
       return;
     }
-    reader.readAsArrayBuffer(selectedFile.slice(offset, offset + CHUNK_SIZE));
+    
+    // Adaptive chunk sizing: default 64KB
+    let chunkSize = 65536;
+    const measuredSpeed = measuredSpeeds.get(peerId);
+    if (measuredSpeed) {
+      // Slow: 16KB, default: 64KB, fast: 256KB
+      if (measuredSpeed < 100 * 1024) chunkSize = 16384;
+      else if (measuredSpeed > 512 * 1024) chunkSize = 262144;
+    }
+    
+    // Check buffered amount for backpressure (per receiver)
+    if (dc.bufferedAmount > 16 * 1024 * 1024) {
+      setTimeout(sendChunk, 50);
+      return;
+    }
+    
+    // Send from cache if available, otherwise read from file
+    if (offset < chunkCache.length * CHUNK_SIZE && chunkCache[Math.floor(offset / CHUNK_SIZE)]) {
+      const cacheIndex = Math.floor(offset / CHUNK_SIZE);
+      const chunk = chunkCache[cacheIndex];
+      dc.send(chunk);
+      offset += chunk.byteLength;
+      prog.sent += chunk.byteLength;
+    } else {
+      // Fall back to reading file directly if cache not available
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const chunk = e.target.result;
+        dc.send(chunk);
+        offset += chunk.byteLength;
+        prog.sent += chunk.byteLength;
+        updateReceiverBadge();
+        setTimeout(sendChunk, 0);
+      };
+      reader.readAsArrayBuffer(selectedFile.slice(offset, offset + chunkSize));
+      return;
+    }
+    
+    updateReceiverBadge();
+    setTimeout(sendChunk, 0);
   };
+  
+  sendChunk();
+}
 
-  reader.onload = e => {
-    const chunk = e.target.result;
-    if (dataChannel.bufferedAmount > 16 * 1024 * 1024) { setTimeout(readNext, 50); return; }
-    dataChannel.send(chunk);
-    offset += CHUNK_SIZE;
-    transferState.sentBytes += chunk.byteLength;
-    updateRealProgress(transferState.sentBytes, transferState.totalSize);
-    setTimeout(readNext, 0);
-  };
-  readNext();
+function setupPeerConnectionListeners() {
+  // Legacy function stub - real logic is in setupPeerConnectionListeners(peerId, pc)
+  // This is kept for backward compatibility
 }
 
 function handleDataMessage(data) {
@@ -473,9 +799,14 @@ function initSocket() {
   Logger.log(`Connecting to ${SERVER_URL}`);
   try {
     socket = io(SERVER_URL, {
-      reconnection: true, reconnectionDelay: 300, reconnectionDelayMax: 1000,
-      reconnectionAttempts: 15, transports: ['websocket','polling'], upgrade: true,
-      path: '/socket.io/', extraHeaders: { 'X-Requested-With': 'XMLHttpRequest' }
+      reconnection: true,
+      reconnectionDelay: 100,        // Reduced from 300ms for faster reconnection
+      reconnectionDelayMax: 500,     // Reduced from 1000ms
+      reconnectionAttempts: 10,      // Reduced from 15
+      transports: ['websocket'],     // WebSocket only, disable polling for lower latency
+      upgrade: false,                // Disable upgrade attempts
+      path: '/socket.io/',
+      extraHeaders: { 'X-Requested-With': 'XMLHttpRequest' }
     });
   } catch(e) { Logger.error('Socket init failed:', e.message); return; }
 
@@ -486,28 +817,99 @@ function initSocket() {
   socket.on('reconnect', () => { document.querySelectorAll('.status-dot').forEach(el => el.style.background = 'var(--green)'); });
 
   socket.on('sender-ready-ack', d => Logger.success('Sender ACK', d));
-  socket.on('receiver-ready', () => { Logger.success('Receiver joined!'); startPeerConnection(); });
+  
+  // Multi-receiver: receiver joins and gets a peerId
+  socket.on('receiver-joined', (data) => {
+    const peerId = data.peerId;
+    Logger.success('Receiver joined!', peerId);
+    startPeerConnectionForReceiver(peerId);
+  });
+  
+  // Receiver receives ready acknowledgment with peerId
+  socket.on('receiver-ready-ack', (data) => {
+    const peerId = data.peerId;
+    const startTime = data.startTime;
+    const elapsed = startTime ? Date.now() - startTime : 0;
+    Logger.log('Receiver ready ACK with peerId', { peerId, elapsed: `${elapsed}ms` });
+    myPeerId = peerId;
+    startPeerConnectionForReceiver(peerId);
+  });
 
+  // WebRTC offer routed by peerId
   socket.on('offer', async data => {
     try {
-      await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
-      const answer = await peerConnection.createAnswer();
-      await peerConnection.setLocalDescription(answer);
-      socket.emit('answer', { code: document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, ''), answer });
+      const peerId = data.peerId || (isSender ? null : myPeerId);
+      const pc = isSender ? peerConnections.get(peerId) : peerConnection;
+      
+      if (!pc) {
+        Logger.warn('No peer connection found for peerId', peerId);
+        return;
+      }
+      
+      const startTime = data.startTime;
+      const elapsed = startTime ? Date.now() - startTime : 0;
+      Logger.log('Received offer for peerId', { peerId, elapsed: `${elapsed}ms` });
+      await pc.setRemoteDescription(new RTCSessionDescription(data.offer));
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      socket.emit('answer', { code: generatedCodeRaw || document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, ''), answer, peerId, startTime });
     } catch(e) { Logger.error('Offer handling failed:', e.message); }
   });
 
+  // WebRTC answer routed by peerId
   socket.on('answer', async data => {
-    try { await peerConnection.setRemoteDescription(new RTCSessionDescription(data.answer)); }
+    try {
+      const peerId = data.peerId;
+      const pc = peerConnections.get(peerId);
+      if (!pc) {
+        Logger.warn('No peer connection found for answer peerId', peerId);
+        return;
+      }
+      const startTime = data.startTime;
+      const elapsed = startTime ? Date.now() - startTime : 0;
+      Logger.log('Received answer for peerId', { peerId, elapsed: `${elapsed}ms` });
+      await pc.setRemoteDescription(new RTCSessionDescription(data.answer));
+    }
     catch(e) { Logger.error('Answer handling failed:', e.message); }
   });
 
+  // ICE candidate routed by peerId
   socket.on('ice-candidate', async data => {
-    try { if(data.candidate) await peerConnection.addIceCandidate(new RTCIceCandidate(data.candidate)); }
+    try {
+      const peerId = data.peerId || (isSender ? null : myPeerId);
+      const pc = isSender ? peerConnections.get(peerId) : peerConnection;
+      if (!pc) return;
+      if(data.candidate) await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+    }
     catch(e) { Logger.error('ICE candidate error:', e.message); }
   });
 
-  socket.on('peer-disconnected', () => { showToast('warning', 'Disconnected', 'The other device disconnected'); resetConnectionCore(); showScreen('screen-send'); });
+  // Peer completed transfer
+  socket.on('peer-complete', (data) => {
+    const peerId = data.peerId;
+    Logger.success('Peer completed transfer', peerId);
+    const prog = peerProgress.get(peerId);
+    if (prog) {
+      prog.sent = prog.total; // Mark as complete
+      updateReceiverBadge();
+    }
+  });
+
+  socket.on('peer-disconnected', (data) => {
+    const peerId = data.peerId;
+    Logger.warn('Peer disconnected', peerId);
+    if (isSender) {
+      peerConnections.delete(peerId);
+      dataChannels.delete(peerId);
+      peerProgress.delete(peerId);
+      updateReceiverBadge();
+    } else {
+      showToast('warning', 'Disconnected', 'The sender disconnected');
+      resetConnectionCore();
+      showScreen('screen-send');
+    }
+  });
+  
   socket.on('code-expired', () => { showToast('warning', 'Code expired', 'This code is no longer valid'); resetConnectionCore(); showScreen('screen-send'); });
 }
 
