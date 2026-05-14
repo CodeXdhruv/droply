@@ -7,7 +7,7 @@ const Logger = {
 };
 
 // ===== CONFIG =====
-const SERVER_URL  = 'https://droply-bxti.onrender.com';
+const SERVER_URL = 'https://droply-bxti.onrender.com';
 const RTC_CONFIG  = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
