@@ -217,14 +217,8 @@
     </div>
 
     <div class="content">
-      <!-- QR Card - Primary Focal Point -->
-      <div class="qr-card">
-        <div class="qr-card-label">Share this QR code</div>
-        <div id="qr-canvas" class="qr-canvas-container"></div>
-        <div class="qr-card-caption">Scan to receive the file</div>
-        <div id="receiver-count-badge" class="receiver-count-badge" style="display: none;">
-          0 receivers connected
-        </div>
+      <div id="receiver-count-badge" class="receiver-count-badge" style="display: none;">
+        0 receivers connected
       </div>
 
       <!-- Compact Code Box -->
@@ -563,7 +557,7 @@
   <div class="toast-container" id="toast-container"></div>
 
   <script src="socket.io.min.js"></script>
-  <script src="qrcode.min.js"></script>
+
   <script src="popup.js"></script>
 </body>
 

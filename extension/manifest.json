@@ -3,7 +3,9 @@
   "name": "Droply",
   "version": "1.0.0",
   "description": "Transfer files up to 100MB with a simple code",
-  "permissions": ["storage"],
+  "permissions": [
+    "storage"
+  ],
   "icons": {
     "16": "assets/icons/icon16.png",
     "32": "assets/icons/icon32.png",
@@ -23,8 +25,8 @@
   "background": {
     "service_worker": "background.js"
   },
-  "host_permissions": [
-    "http://localhost:3000/*",
-    "https://droply-bxti.onrender.com/*"
-  ]
+"host_permissions": [
+  "http://localhost:3000/*",
+  "https://droply-bxti.onrender.com/*"
+]
 }

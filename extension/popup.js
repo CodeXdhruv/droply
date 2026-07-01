@@ -7,7 +7,8 @@ const Logger = {
 };
 
 // ===== CONFIG =====
-const SERVER_URL = 'https://droply-bxti.onrender.com';
+const SERVER_URL = 'https://droply-bxti.onrender.com'; // Production Server
+// const SERVER_URL = 'http://localhost:3000';           // Local Development Server
 const RTC_CONFIG  = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -63,6 +64,7 @@ let recvDc      = null;
 let recvChunks  = [];
 let recvMeta    = null;
 let recvBlobUrl = null;
+let iceBuffers  = new Map(); // peerId -> candidate[]
 
 let currentScreen = 'screen-splash';
 let prevScreen    = 'screen-send';
@@ -189,25 +191,7 @@ function generateCode() {
   document.getElementById('code-chip-name').textContent = selectedFile.name;
   document.getElementById('code-chip-size').textContent = formatBytes(selectedFile.size);
 
-  // QR code
-  const receiverUrl  = `${SERVER_URL}/receive?code=${code}`;
-  const qrContainer  = document.getElementById('qr-canvas');
-  qrContainer.innerHTML = '';
-  try {
-    new QRCode(qrContainer, {
-      text:         receiverUrl,
-      width:        160,
-      height:       160,
-      colorDark:    '#6C5CE7',
-      colorLight:   '#ffffff',
-      correctLevel: QRCode.CorrectLevel.M,
-    });
-    // Monkey overlay after canvas is painted
-    setTimeout(() => overlayMonkeyOnQR(qrContainer), 300);
-  } catch (e) {
-    Logger.error('QR generation failed', e);
-    qrContainer.innerHTML = '<p style="color:red;font-size:12px">QR Error</p>';
-  }
+
 
   isSender = true;
   showScreen('screen-code');
@@ -450,6 +434,10 @@ function handleReceivedData(data) {
 function finalizeReceive() {
   const blob    = new Blob(recvChunks, { type: recvMeta.mime });
   recvBlobUrl   = URL.createObjectURL(blob);
+  
+  // Clear memory immediately
+  recvChunks = [];
+  
   showComplete(recvMeta.name, recvMeta.size);
 }
 
@@ -459,6 +447,13 @@ function downloadFile() {
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
+  // Proactive cleanup
+  setTimeout(() => {
+    if (recvBlobUrl) {
+      URL.revokeObjectURL(recvBlobUrl);
+      recvBlobUrl = null;
+    }
+  }, 10000);
 }
 
 // ===== PROGRESS =====
@@ -578,10 +573,10 @@ function initSocket() {
   Logger.log('Connecting to', SERVER_URL);
   try {
     socket = io(SERVER_URL, {
-      transports:          ['websocket'],
+      transports:          ['websocket', 'polling'],
       reconnection:        true,
-      reconnectionDelay:   500,
-      reconnectionAttempts: 5,
+      reconnectionDelay:   1000,
+      reconnectionAttempts: 10,
     });
   } catch (e) { Logger.error('Socket init failed', e); return; }
 
@@ -605,6 +600,15 @@ function initSocket() {
     try {
       await pc.setRemoteDescription(new RTCSessionDescription(answer));
       Logger.log('Answer set for', peerId);
+      
+      // Process buffered ICE candidates
+      const buffer = iceBuffers.get(peerId);
+      if (buffer) {
+        while (buffer.length) {
+          await pc.addIceCandidate(buffer.shift());
+        }
+        iceBuffers.delete(peerId);
+      }
     } catch (e) { Logger.error('setRemoteDescription failed', e); }
   });
 
@@ -626,6 +630,15 @@ function initSocket() {
       const code = document.getElementById('receive-code-input').value.replace(/[^A-Z0-9]/gi, '').toUpperCase();
       socket.emit('answer', { code, answer, peerId });
       Logger.log('Answer sent for', peerId);
+
+      // Process buffered ICE candidates
+      const buffer = iceBuffers.get(peerId);
+      if (buffer) {
+        while (buffer.length) {
+          await recvPc.addIceCandidate(buffer.shift());
+        }
+        iceBuffers.delete(peerId);
+      }
     } catch (e) { Logger.error('Offer handling failed', e); }
   });
 
@@ -635,8 +648,14 @@ function initSocket() {
     // Try sender map first, then receiver connection
     const pc = peerConnections.get(peerId) || recvPc;
     if (!pc || !candidate) return;
+    
     try {
-      await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      if (pc.remoteDescription) {
+        await pc.addIceCandidate(new RTCIceCandidate(candidate));
+      } else {
+        if (!iceBuffers.has(peerId)) iceBuffers.set(peerId, []);
+        iceBuffers.get(peerId).push(new RTCIceCandidate(candidate));
+      }
     } catch (e) { Logger.warn('addIceCandidate failed', e.message); }
   });
 
@@ -724,41 +743,4 @@ function toggleTheme() {
 
 function clearHistory() {
   showToast('success', 'History cleared', 'Transfer history has been cleared.');
-}
-
-// ===== QR MONKEY OVERLAY (unchanged logic, cleaned up) =====
-function overlayMonkeyOnQR(container) {
-  const canvas = container.querySelector('canvas');
-  if (!canvas) return;
-  const ctx = canvas.getContext('2d');
-  const cx  = canvas.width / 2;
-  const cy  = canvas.height / 2;
-  const r   = 28;
-
-  ctx.beginPath();
-  ctx.arc(cx, cy, r, 0, Math.PI * 2);
-  ctx.fillStyle = '#ffffff';
-  ctx.fill();
-
-  const svg = `<svg viewBox="0 0 120 120" xmlns="http://www.w3.org/2000/svg">
-    <circle cx="22" cy="58" r="14" fill="#C8874B"/>
-    <circle cx="98" cy="58" r="14" fill="#C8874B"/>
-    <circle cx="22" cy="58" r="9" fill="#E8A570"/>
-    <circle cx="98" cy="58" r="9" fill="#E8A570"/>
-    <ellipse cx="60" cy="85" rx="26" ry="22" fill="#C8874B"/>
-    <ellipse cx="60" cy="88" rx="16" ry="14" fill="#E8A570"/>
-    <circle cx="60" cy="52" r="32" fill="#C8874B"/>
-    <ellipse cx="60" cy="60" rx="20" ry="16" fill="#E8A570"/>
-    <circle cx="50" cy="48" r="6" fill="white"/><circle cx="70" cy="48" r="6" fill="white"/>
-    <circle cx="51" cy="49" r="3.5" fill="#2D2D2D"/><circle cx="71" cy="49" r="3.5" fill="#2D2D2D"/>
-    <circle cx="52" cy="48" r="1.2" fill="white"/><circle cx="72" cy="48" r="1.2" fill="white"/>
-    <ellipse cx="60" cy="58" rx="6" ry="4" fill="#B8704A"/>
-    <circle cx="57.5" cy="57.5" r="1.5" fill="#8B4513"/>
-    <circle cx="62.5" cy="57.5" r="1.5" fill="#8B4513"/>
-    <path d="M51 64 Q60 71 69 64" stroke="#8B4513" stroke-width="1.8" fill="none" stroke-linecap="round"/>
-  </svg>`;
-
-  const img = new Image();
-  img.onload = () => ctx.drawImage(img, cx - 20, cy - 20, 40, 40);
-  img.src = 'data:image/svg+xml;base64,' + btoa(svg);
 }
